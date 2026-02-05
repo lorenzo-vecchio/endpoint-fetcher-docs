@@ -14,14 +14,17 @@ RUN npm run build
 # --- Stage 2: Production Stage ---
 FROM nginx:stable-alpine
 
-# Remove default Nginx static assets
+# 1. Clear out the default Nginx files (the part you correctly spotted!)
 RUN rm -rf /usr/share/nginx/html/*
 
-# Copy the "out" folder from the builder stage
-COPY --from=builder /app/out /usr/share/nginx/html
+# 2. Remove the default Nginx config
+RUN rm /etc/nginx/conf.d/default.conf
 
-# Optional: Copy a custom nginx config if you have one
-# COPY nginx.conf /etc/nginx/conf.d/default.conf
+# 3. Copy your custom config (created in the previous step)
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# 4. Copy the "out" folder from the builder stage
+COPY --from=builder /app/out /usr/share/nginx/html
 
 EXPOSE 80
 
