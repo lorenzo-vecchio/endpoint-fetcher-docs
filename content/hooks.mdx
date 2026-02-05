@@ -1,0 +1,589 @@
+# Hierarchical Hooks
+
+Add cross-cutting behavior at global, group, or endpoint levels with precise control over execution order.
+
+## Hook Levels
+
+Hooks can be defined at three levels, each serving different purposes:
+
+### Global Hooks (Client-Level)
+
+Apply to **all** requests across the entire API client:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    beforeRequest: async (url, init) => {
+      // Runs for EVERY request
+      console.log('Making request to:', url);
+      return { url, init };
+    },
+  },
+});
+```
+
+**Use global hooks for:**
+- Request/response logging
+- Error tracking
+- Performance monitoring
+
+### Group Hooks (Group-Level)
+
+Apply to all endpoints within a group (including nested groups):
+
+```typescript
+const api = createApiClient({
+  admin: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        // Runs for all admin endpoints
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              'X-Admin-Request': 'true',
+            }
+          }
+        };
+      },
+    },
+    endpoints: {
+      stats: get<void, Stats>('/admin/stats'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+**Use group hooks for:**
+- Authentication
+- Rate limiting per group
+- Logging for specific API sections
+- Adding context headers
+
+### Endpoint Hooks (Endpoint-Level)
+
+Apply to a single specific endpoint:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      create: post<CreateUserInput, User>(
+        '/users',
+        undefined,
+        {
+          beforeRequest: async (url, init) => {
+            // Runs only for user creation
+            console.log('Creating new user');
+            return { url, init };
+          },
+          afterResponse: async (response) => {
+            console.log('User created successfully');
+            return response;
+          },
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+**Use endpoint hooks for:**
+- Endpoint-specific validation
+- Special logging or analytics
+- Custom retry logic
+- Response transformation
+
+## Hook Types
+
+### `beforeRequest` - Modify Requests
+
+Called before the request is sent. Can modify URL and request options:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    beforeRequest: async (url, init) => {
+      // Add authentication
+      const token = localStorage.getItem('jwt');
+      
+      return {
+        url,
+        init: {
+          ...init,
+          headers: {
+            ...init.headers,
+            Authorization: `Bearer ${token}`,
+          }
+        }
+      };
+    },
+  },
+});
+```
+
+**Signature:**
+```typescript
+beforeRequest?: (
+  url: string,
+  init: RequestInit
+) => Promise<{ url: string; init: RequestInit }> | { url: string; init: RequestInit };
+```
+
+### `afterResponse` - Transform Responses
+
+Called after receiving a response. Can modify the response:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    afterResponse: async (response, url, init) => {
+      // Log response status
+      console.log(`${init.method} ${url} - ${response.status}`);
+      
+      // Handle token refresh
+      if (response.status === 401) {
+        const newToken = await refreshToken();
+        localStorage.setItem('jwt', newToken);
+        
+        // Retry with new token
+        return fetch(url, {
+          ...init,
+          headers: {
+            ...init.headers,
+            Authorization: `Bearer ${newToken}`,
+          },
+        });
+      }
+      
+      return response;
+    },
+  },
+});
+```
+
+**Signature:**
+```typescript
+afterResponse?: (
+  response: Response,
+  url: string,
+  init: RequestInit
+) => Promise<Response> | Response;
+```
+
+### `onError` - Handle Errors
+
+Called when an error occurs during the request:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    onError: async (error) => {
+      // Log to error tracking service
+      console.error('API Error:', error);
+      
+      // Could integrate with Sentry, Datadog, etc.
+      // Sentry.captureException(error);
+    },
+  },
+});
+```
+
+**Signature:**
+```typescript
+onError?: (error: unknown) => Promise<void> | void;
+```
+
+## Hook Execution Order
+
+Hooks execute in a specific order to provide predictable behavior:
+
+### `beforeRequest` Order (Sequential)
+
+Executes from **outer to inner**:
+
+1. Global hooks
+2. Parent group hooks
+3. Child group hooks
+4. Endpoint-specific hooks
+
+```typescript
+const api = createApiClient({
+  admin: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        console.log('2. Admin group');
+        return { url, init };
+      },
+    },
+    groups: {
+      users: group({
+        hooks: {
+          beforeRequest: async (url, init) => {
+            console.log('3. Users subgroup');
+            return { url, init };
+          },
+        },
+        endpoints: {
+          create: post<CreateUserInput, User>(
+            '/admin/users',
+            undefined,
+            {
+              beforeRequest: async (url, init) => {
+                console.log('4. Endpoint');
+                return { url, init };
+              },
+            }
+          ),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    beforeRequest: async (url, init) => {
+      console.log('1. Global');
+      return { url, init };
+    },
+  },
+});
+
+// Calling api.admin.users.create() logs:
+// 1. Global
+// 2. Admin group
+// 3. Users subgroup
+// 4. Endpoint
+```
+
+### `afterResponse` Order (Reverse)
+
+Executes from **inner to outer** (reverse order):
+
+1. Endpoint-specific hooks
+2. Child group hooks
+3. Parent group hooks
+4. Global hooks
+
+```typescript
+const api = createApiClient({
+  admin: group({
+    hooks: {
+      afterResponse: async (response) => {
+        console.log('3. Admin group');
+        return response;
+      },
+    },
+    groups: {
+      users: group({
+        hooks: {
+          afterResponse: async (response) => {
+            console.log('2. Users subgroup');
+            return response;
+          },
+        },
+        endpoints: {
+          create: post<CreateUserInput, User>(
+            '/admin/users',
+            undefined,
+            {
+              afterResponse: async (response) => {
+                console.log('1. Endpoint');
+                return response;
+              },
+            }
+          ),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    afterResponse: async (response) => {
+      console.log('4. Global');
+      return response;
+    },
+  },
+});
+
+// Calling api.admin.users.create() logs:
+// 1. Endpoint
+// 2. Users subgroup
+// 3. Admin group
+// 4. Global
+```
+
+### `onError` Order (Sequential)
+
+Executes from **outer to inner** (same as `beforeRequest`):
+
+1. Global hooks
+2. Parent group hooks
+3. Child group hooks
+4. Endpoint-specific hooks
+
+## Common Use Cases
+
+### Authentication (Global)
+
+Add authentication to all requests:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      me: get<void, User>('/me'),
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    beforeRequest: async (url, init) => {
+      const token = localStorage.getItem('jwt');
+      
+      return {
+        url,
+        init: {
+          ...init,
+          headers: {
+            ...init.headers,
+            Authorization: `Bearer ${token}`,
+          }
+        }
+      };
+    },
+  },
+});
+```
+
+### Logging (Global/Group)
+
+Log all requests and responses:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    beforeRequest: async (url, init) => {
+      console.log(`→ ${init.method} ${url}`);
+      return { url, init };
+    },
+    afterResponse: async (response, url, init) => {
+      console.log(`← ${init.method} ${url} - ${response.status}`);
+      return response;
+    },
+  },
+});
+```
+
+### Rate Limiting (Group)
+
+Rate limit specific API sections:
+
+```typescript
+const createRateLimiter = (requestsPerSecond: number) => {
+  let lastRequest = 0;
+  const minInterval = 1000 / requestsPerSecond;
+  
+  return async (url: string, init: RequestInit) => {
+    const now = Date.now();
+    const timeSinceLastRequest = now - lastRequest;
+    
+    if (timeSinceLastRequest < minInterval) {
+      await new Promise(resolve =>
+        setTimeout(resolve, minInterval - timeSinceLastRequest)
+      );
+    }
+    
+    lastRequest = Date.now();
+    return { url, init };
+  };
+};
+
+const api = createApiClient({
+  analytics: group({
+    hooks: {
+      beforeRequest: createRateLimiter(2), // Max 2 requests/second
+    },
+    endpoints: {
+      track: post<Event, void>('/analytics/track'),
+    }
+  }),
+  
+  users: group({
+    hooks: {
+      beforeRequest: createRateLimiter(10), // Max 10 requests/second
+    },
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### Error Tracking (Global)
+
+Track all errors globally:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    onError: async (error) => {
+      // Send to error tracking service
+      console.error('API Error:', error);
+      
+      // Example integrations:
+      // Sentry.captureException(error);
+      // Datadog.logError(error);
+      // rollbar.error(error);
+    },
+  },
+});
+```
+
+### Token Refresh (Global)
+
+Automatically refresh expired tokens:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      me: get<void, User>('/me'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    afterResponse: async (response, url, init) => {
+      // Handle 401 (except for auth endpoints)
+      if (response.status === 401 && !url.includes('/auth/')) {
+        try {
+          // Refresh the token
+          const refreshToken = localStorage.getItem('refreshToken');
+          const tokenResponse = await fetch('https://api.example.com/auth/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refreshToken }),
+          });
+          
+          const { token } = await tokenResponse.json();
+          localStorage.setItem('jwt', token);
+          
+          // Retry the original request with new token
+          return fetch(url, {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${token}`,
+            },
+          });
+        } catch (error) {
+          // Refresh failed, redirect to login
+          window.location.href = '/login';
+          throw error;
+        }
+      }
+      
+      return response;
+    },
+  },
+});
+```
+
+### Conditional Headers (Group)
+
+Add headers based on conditions:
+
+```typescript
+const api = createApiClient({
+  admin: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        const isAdmin = checkAdminStatus();
+        
+        if (!isAdmin) {
+          throw new Error('Admin access required');
+        }
+        
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              'X-Admin-Request': 'true',
+              'X-User-Role': 'admin',
+            }
+          }
+        };
+      },
+    },
+    endpoints: {
+      stats: get<void, Stats>('/admin/stats'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+## Next Steps
+
+Master hooks and move on to:
+
+- [Configuration](/configuration) - Explore all client configuration options
+- [Plugins](/plugins) - Use plugins for reusable hook logic
+- [Error Handling](/error-handling) - Combine hooks with error strategies
+- [Advanced Examples](/advanced-examples) - Complex hook compositions
