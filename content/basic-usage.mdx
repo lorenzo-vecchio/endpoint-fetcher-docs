@@ -1,0 +1,350 @@
+# Basic Usage
+
+Learn how to create your first API client and define endpoints.
+
+## Creating Your First Client
+
+### `createApiClient` Signature
+
+The `createApiClient` function takes two arguments:
+
+```typescript
+createApiClient<TEndpoints>(endpoints, config)
+```
+
+- **`endpoints`**: Object mapping names to endpoint configurations or groups
+- **`config`**: Client configuration (baseUrl, headers, hooks, plugins)
+
+### Basic Configuration (baseUrl)
+
+The minimum required configuration is a `baseUrl`:
+
+```typescript
+import { createApiClient, get } from 'endpoint-fetcher';
+
+type User = { id: string; name: string };
+
+const api = createApiClient({
+  getUser: get<{ id: string }, User>((input) => `/users/${input.id}`),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+**Optional configuration:**
+
+```typescript
+const api = createApiClient({
+  // ... endpoints
+}, {
+  baseUrl: 'https://api.example.com',
+  defaultHeaders: {
+    'Content-Type': 'application/json',
+    'X-API-Key': 'your-api-key',
+  },
+  fetch: customFetch,     // Custom fetch instance
+  hooks: { /* ... */ },   // Global hooks
+  plugins: [ /* ... */ ], // Plugins
+});
+```
+
+## Defining Endpoints
+
+### Using Helper Functions: `get()`, `post()`, `put()`, `patch()`, `del()`
+
+Helper functions provide a clean, intuitive API for defining endpoints:
+
+**GET - Retrieve data**
+```typescript
+import { get } from 'endpoint-fetcher';
+
+// No input needed
+const listUsers = get<void, User[]>('/users');
+
+// With path parameters
+const getUser = get<{ id: string }, User>((input) => `/users/${input.id}`);
+```
+
+**POST - Create data**
+```typescript
+import { post } from 'endpoint-fetcher';
+
+type CreateUserInput = { name: string; email: string };
+
+const createUser = post<CreateUserInput, User>('/users');
+```
+
+**PUT - Replace data**
+```typescript
+import { put } from 'endpoint-fetcher';
+
+const replaceUser = put<User, User>((input) => `/users/${input.id}`);
+```
+
+**PATCH - Update data**
+```typescript
+import { patch } from 'endpoint-fetcher';
+
+type UpdateUserInput = Partial<User> & { id: string };
+
+const updateUser = patch<UpdateUserInput, User>((input) => `/users/${input.id}`);
+```
+
+**DELETE - Remove data**
+```typescript
+import { del } from 'endpoint-fetcher';
+
+const deleteUser = del<{ id: string }, void>((input) => `/users/${input.id}`);
+```
+
+### Static vs Dynamic Paths
+
+**Static paths** - Simple string paths:
+
+```typescript
+const api = createApiClient({
+  listUsers: get<void, User[]>('/users'),
+  listPosts: get<void, Post[]>('/posts'),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+**Dynamic paths** - Functions that build paths from input:
+
+```typescript
+const api = createApiClient({
+  getUser: get<{ id: string }, User>(
+    (input) => `/users/${input.id}`
+  ),
+  
+  getUserPosts: get<{ userId: string; status?: string }, Post[]>(
+    (input) => {
+      const base = `/users/${input.userId}/posts`;
+      return input.status ? `${base}?status=${input.status}` : base;
+    }
+  ),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### The `endpoint()` Helper for Custom Methods
+
+For non-standard HTTP methods or when you need full control:
+
+```typescript
+import { endpoint } from 'endpoint-fetcher';
+
+const api = createApiClient({
+  // Standard helper
+  getUser: get<{ id: string }, User>((input) => `/users/${input.id}`),
+  
+  // Custom method using endpoint()
+  customEndpoint: endpoint<{ id: string }, User>({
+    method: 'GET',
+    path: (input) => `/users/${input.id}`,
+    hooks: {
+      beforeRequest: async (url, init) => {
+        console.log('Custom endpoint called');
+        return { url, init };
+      },
+    },
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+**Complete endpoint configuration:**
+
+```typescript
+import { endpoint } from 'endpoint-fetcher';
+
+const searchUsers = endpoint<SearchInput, User[], ApiError>({
+  method: 'POST',
+  path: '/users/search',
+  handler: async ({ input, fetch, baseUrl, path }) => {
+    // Custom implementation
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return response.json();
+  },
+  hooks: {
+    beforeRequest: async (url, init) => ({ url, init }),
+  },
+});
+```
+
+## Making Requests
+
+### Calling Endpoints
+
+Once your client is created, calling endpoints is straightforward:
+
+```typescript
+const api = createApiClient({
+  listUsers: get<void, User[]>('/users'),
+  getUser: get<{ id: string }, User>((input) => `/users/${input.id}`),
+  createUser: post<CreateUserInput, User>('/users'),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// No input required
+const users = await api.listUsers();
+
+// With input
+const user = await api.getUser({ id: '123' });
+
+// POST with body
+const newUser = await api.createUser({ 
+  name: 'John Doe', 
+  email: 'john@example.com' 
+});
+```
+
+**TypeScript autocomplete works throughout:**
+
+```typescript
+// ✅ Autocomplete suggests available methods
+api.
+
+// ✅ Autocomplete shows required input properties
+api.getUser({ id: '123' });
+
+// ✅ Return type is inferred
+const user = await api.getUser({ id: '123' });
+user.name; // TypeScript knows this is a string
+```
+
+### Handling Responses
+
+Responses are automatically parsed and typed:
+
+```typescript
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: string;
+};
+
+const api = createApiClient({
+  getUser: get<{ id: string }, User>((input) => `/users/${input.id}`),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+const user = await api.getUser({ id: '123' });
+
+// TypeScript knows the exact shape
+console.log(user.name);      // string
+console.log(user.email);     // string
+console.log(user.createdAt); // string
+```
+
+**For non-JSON responses, use custom handlers:**
+
+```typescript
+const api = createApiClient({
+  downloadFile: get<{ id: string }, Blob>(
+    (input) => `/files/${input.id}`,
+    async ({ fetch, baseUrl, path }) => {
+      const response = await fetch(`${baseUrl}${path}`, { method: 'GET' });
+      return response.blob();
+    }
+  ),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+const blob = await api.downloadFile({ id: 'file-123' });
+```
+
+### Type-Safe Error Handling
+
+Define expected error structures with the third generic parameter:
+
+```typescript
+type ApiError = {
+  message: string;
+  code: string;
+  field?: string;
+};
+
+const api = createApiClient({
+  createUser: post<CreateUserInput, User, ApiError>('/users'),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+try {
+  const user = await api.createUser({ 
+    name: 'John', 
+    email: 'invalid-email' 
+  });
+} catch (err: unknown) {
+  // Assert the error type to access typed properties
+  const error = err as { 
+    status: number; 
+    statusText: string; 
+    error: ApiError 
+  };
+  
+  console.log(`Error ${error.status}: ${error.statusText}`);
+  console.log(`Code: ${error.error.code}`);
+  console.log(`Message: ${error.error.message}`);
+  
+  if (error.error.field) {
+    console.log(`Field: ${error.error.field}`);
+  }
+}
+```
+
+**Error object structure:**
+
+When an error occurs, the thrown object has this shape:
+
+```typescript
+{
+  status: number;        // HTTP status code (e.g., 404, 500)
+  statusText: string;    // HTTP status text (e.g., "Not Found")
+  error: TError;         // Your typed error response body
+}
+```
+
+**Common error handling pattern:**
+
+```typescript
+type ApiError = { message: string; code: string };
+
+async function makeRequest() {
+  try {
+    return await api.createUser({ name: 'John', email: 'john@example.com' });
+  } catch (err: unknown) {
+    const error = err as { status: number; error: ApiError };
+    
+    if (error.status === 400) {
+      console.error('Validation error:', error.error.message);
+    } else if (error.status === 401) {
+      console.error('Unauthorized');
+    } else {
+      console.error('Unexpected error:', error.error);
+    }
+    
+    throw err;
+  }
+}
+```
+
+## Next Steps
+
+Now that you understand basic usage, explore:
+
+- [Groups & Organization](/groups) - Structure large APIs with nested groups
+- [Hooks](/hooks) - Add authentication, logging, and error handling
+- [Configuration](/configuration) - Learn about all client options
+- [Error Handling](/error-handling) - Deep dive into error types and strategies
