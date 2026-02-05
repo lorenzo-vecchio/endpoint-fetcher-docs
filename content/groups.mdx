@@ -1,0 +1,372 @@
+# Groups & Organization
+
+Organize related endpoints into logical groups with shared configuration.
+
+## Nested Groups
+
+Groups help structure large APIs by organizing endpoints hierarchically. Each group can have its own hooks and configuration.
+
+### Basic Groups
+
+Create groups using the `group()` helper:
+
+```typescript
+import { createApiClient, group, get, post, del } from 'endpoint-fetcher';
+
+type User = { id: string; name: string; email: string };
+type Post = { id: string; title: string; content: string };
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+      getById: get<{ id: string }, User>((input) => `/users/${input.id}`),
+      create: post<Omit<User, 'id'>, User>('/users'),
+      delete: del<{ id: string }, void>((input) => `/users/${input.id}`),
+    }
+  }),
+  
+  posts: group({
+    endpoints: {
+      list: get<void, Post[]>('/posts'),
+      getById: get<{ id: string }, Post>((input) => `/posts/${input.id}`),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Access grouped endpoints
+const users = await api.users.list();
+const user = await api.users.getById({ id: '123' });
+const posts = await api.posts.list();
+```
+
+### Deeply Nested Groups
+
+Groups can contain other groups for complex API structures:
+
+```typescript
+const api = createApiClient({
+  admin: group({
+    groups: {
+      users: group({
+        endpoints: {
+          list: get<void, User[]>('/admin/users'),
+          ban: post<{ id: string }, void>((input) => `/admin/users/${input.id}/ban`),
+        }
+      }),
+      
+      reports: group({
+        endpoints: {
+          daily: get<{ date: string }, Report>((input) => `/admin/reports/daily/${input.date}`),
+          monthly: get<{ month: string }, Report>((input) => `/admin/reports/monthly/${input.month}`),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Access nested groups with dot notation
+await api.admin.users.list();
+await api.admin.users.ban({ id: '123' });
+const report = await api.admin.reports.daily({ date: '2024-01-01' });
+```
+
+### Mixed Groups (Endpoints + Nested Groups)
+
+A group can contain both direct endpoints and nested groups:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    // Direct endpoints at this level
+    endpoints: {
+      list: get<void, User[]>('/users'),
+      create: post<CreateUserInput, User>('/users'),
+    },
+    
+    // Nested groups
+    groups: {
+      profile: group({
+        endpoints: {
+          get: get<{ userId: string }, Profile>(
+            (input) => `/users/${input.userId}/profile`
+          ),
+          update: patch<ProfileUpdate, Profile>(
+            (input) => `/users/${input.userId}/profile`
+          ),
+        }
+      }),
+      
+      settings: group({
+        endpoints: {
+          get: get<{ userId: string }, Settings>(
+            (input) => `/users/${input.userId}/settings`
+          ),
+          update: put<SettingsUpdate, Settings>(
+            (input) => `/users/${input.userId}/settings`
+          ),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Use both levels
+const users = await api.users.list();                          // Direct endpoint
+const profile = await api.users.profile.get({ userId: '123' }); // Nested group
+const settings = await api.users.settings.get({ userId: '123' });
+```
+
+## Accessing Grouped Endpoints
+
+### Dot Notation Navigation
+
+Access endpoints using intuitive dot notation:
+
+```typescript
+const api = createApiClient({
+  v1: group({
+    groups: {
+      users: group({
+        endpoints: {
+          list: get<void, User[]>('/v1/users'),
+        }
+      }),
+    }
+  }),
+  
+  v2: group({
+    groups: {
+      users: group({
+        endpoints: {
+          list: get<void, User[]>('/v2/users'),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Clear, readable access
+const v1Users = await api.v1.users.list();
+const v2Users = await api.v2.users.list();
+```
+
+### TypeScript Autocomplete
+
+TypeScript provides full autocomplete at every level:
+
+```typescript
+const api = createApiClient({
+  admin: group({
+    groups: {
+      users: group({
+        endpoints: {
+          list: get<void, User[]>('/admin/users'),
+          getById: get<{ id: string }, User>((input) => `/admin/users/${input.id}`),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Autocomplete works at each level:
+api.              // ✅ Suggests: admin
+api.admin.        // ✅ Suggests: users
+api.admin.users.  // ✅ Suggests: list, getById
+
+// Autocomplete for input parameters
+api.admin.users.getById({ id: '123' }); // ✅ Suggests 'id' property
+```
+
+## Shared Configuration Per Group
+
+Groups can have their own hooks that apply to all endpoints within:
+
+```typescript
+const api = createApiClient({
+  public: group({
+    endpoints: {
+      status: get<void, { status: string }>('/status'),
+      posts: get<void, Post[]>('/posts'),
+    }
+  }),
+  
+  protected: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        // Add auth header to all protected endpoints
+        const token = localStorage.getItem('jwt');
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${token}`,
+            }
+          }
+        };
+      },
+    },
+    endpoints: {
+      profile: get<void, User>('/profile'),
+      settings: get<void, Settings>('/settings'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// public endpoints - no auth
+await api.public.status();
+
+// protected endpoints - auth automatically added
+await api.protected.profile();  // ✅ Includes Authorization header
+await api.protected.settings(); // ✅ Includes Authorization header
+```
+
+**Group hooks apply to nested groups too:**
+
+```typescript
+const api = createApiClient({
+  admin: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        // Applies to all admin endpoints and nested groups
+        console.log('Admin request:', url);
+        return { url, init };
+      },
+    },
+    groups: {
+      users: group({
+        endpoints: {
+          list: get<void, User[]>('/admin/users'),
+        }
+      }),
+      posts: group({
+        endpoints: {
+          list: get<void, Post[]>('/admin/posts'),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Both inherit the admin group's beforeRequest hook
+await api.admin.users.list(); // Logs: "Admin request: ..."
+await api.admin.posts.list(); // Logs: "Admin request: ..."
+```
+
+## Real-World Organization Example
+
+Here's how to structure a complete API:
+
+```typescript
+const api = createApiClient({
+  // Public endpoints (no auth)
+  public: group({
+    endpoints: {
+      health: get<void, { status: string }>('/health'),
+      posts: get<void, Post[]>('/posts'),
+    }
+  }),
+  
+  // User endpoints (requires auth)
+  user: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        const token = getAuthToken();
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${token}`,
+            }
+          }
+        };
+      },
+    },
+    endpoints: {
+      me: get<void, User>('/user/me'),
+    },
+    groups: {
+      posts: group({
+        endpoints: {
+          list: get<void, Post[]>('/user/posts'),
+          create: post<CreatePostInput, Post>('/user/posts'),
+          delete: del<{ id: string }, void>((input) => `/user/posts/${input.id}`),
+        }
+      }),
+      settings: group({
+        endpoints: {
+          get: get<void, Settings>('/user/settings'),
+          update: patch<Partial<Settings>, Settings>('/user/settings'),
+        }
+      }),
+    }
+  }),
+  
+  // Admin endpoints (requires admin auth)
+  admin: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        const token = getAdminToken();
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${token}`,
+              'X-Admin-Request': 'true',
+            }
+          }
+        };
+      },
+    },
+    groups: {
+      users: group({
+        endpoints: {
+          list: get<void, User[]>('/admin/users'),
+          ban: post<{ id: string }, void>((input) => `/admin/users/${input.id}/ban`),
+        }
+      }),
+      analytics: group({
+        endpoints: {
+          overview: get<void, Analytics>('/admin/analytics'),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Usage is clean and organized
+await api.public.health();           // No auth
+await api.user.me();                 // User auth
+await api.user.posts.create({...});  // User auth
+await api.admin.users.ban({...});    // Admin auth
+```
+
+## Next Steps
+
+Now that you can organize endpoints effectively:
+
+- [Hierarchical Hooks](/hooks) - Learn how hooks work across groups
+- [Configuration](/configuration) - Explore all group configuration options
+- [Advanced Examples](/advanced-examples) - See complex real-world structures
