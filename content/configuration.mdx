@@ -1,0 +1,657 @@
+# Configuration
+
+Learn about all available configuration options for clients, endpoints, and groups.
+
+## Client Options
+
+Configure the API client with `createApiClient`:
+
+```typescript
+const api = createApiClient(
+  { /* endpoints */ },
+  {
+    baseUrl: 'https://api.example.com',
+    defaultHeaders: { /* ... */ },
+    fetch: customFetch,
+    hooks: { /* ... */ },
+    plugins: [ /* ... */ ],
+  }
+);
+```
+
+### `baseUrl`
+
+**Required.** The base URL for all API requests.
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'), // → https://api.example.com/users
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+**Dynamic base URLs:**
+
+```typescript
+const baseUrl = process.env.NODE_ENV === 'production'
+  ? 'https://api.production.com'
+  : 'https://api.staging.com';
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl,
+});
+```
+
+### `defaultHeaders`
+
+Optional. Headers applied to all requests.
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  defaultHeaders: {
+    'Content-Type': 'application/json',
+    'X-API-Key': 'your-api-key',
+    'X-Client-Version': '1.0.0',
+  },
+});
+```
+
+**Dynamic headers:**
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  defaultHeaders: {
+    'Content-Type': 'application/json',
+    'X-Request-ID': crypto.randomUUID(),
+  },
+});
+```
+
+### `fetch`
+
+Optional. Custom fetch instance for advanced use cases.
+
+**Use cases:**
+- Add interceptors
+- Mock requests in tests
+- Use a specific fetch polyfill
+- Add automatic retries
+
+```typescript
+const customFetch: typeof fetch = async (input, init) => {
+  console.log('Request:', input);
+  
+  const response = await fetch(input, init);
+  
+  console.log('Response:', response.status);
+  
+  return response;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  fetch: customFetch,
+});
+```
+
+**Example: Retry logic**
+
+```typescript
+const fetchWithRetry: typeof fetch = async (input, init) => {
+  const maxRetries = 3;
+  let lastError;
+  
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await fetch(input, init);
+    } catch (error) {
+      lastError = error;
+      if (i < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
+      }
+    }
+  }
+  
+  throw lastError;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  fetch: fetchWithRetry,
+});
+```
+
+### `hooks`
+
+Optional. Global hooks applied to all requests.
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    beforeRequest: async (url, init) => {
+      const token = localStorage.getItem('jwt');
+      return {
+        url,
+        init: {
+          ...init,
+          headers: {
+            ...init.headers,
+            Authorization: `Bearer ${token}`,
+          }
+        }
+      };
+    },
+    afterResponse: async (response) => {
+      console.log('Response:', response.status);
+      return response;
+    },
+    onError: async (error) => {
+      console.error('Error:', error);
+    },
+  },
+});
+```
+
+See [Hierarchical Hooks](/hooks) for detailed documentation.
+
+### `plugins`
+
+Optional. Array of plugins to extend functionality.
+
+```typescript
+import { cache } from '@endpoint-fetcher/cache';
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    cache({ ttl: 300 }),
+  ],
+});
+```
+
+See [Plugins](/plugins) for detailed documentation.
+
+## Endpoint Configuration
+
+Configure individual endpoints using helper functions or the `endpoint()` function:
+
+### Helper Functions
+
+**Using `get()`, `post()`, `put()`, `patch()`, `del()`:**
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      // method, path
+      list: get<void, User[]>('/users'),
+      
+      // method, path function
+      getById: get<{ id: string }, User>((input) => `/users/${input.id}`),
+      
+      // method, path, custom handler
+      download: get<{ id: string }, Blob>(
+        (input) => `/files/${input.id}`,
+        async ({ fetch, baseUrl, path }) => {
+          const response = await fetch(`${baseUrl}${path}`, { method: 'GET' });
+          return response.blob();
+        }
+      ),
+      
+      // method, path, custom handler, hooks
+      create: post<CreateUserInput, User>(
+        '/users',
+        undefined,
+        {
+          beforeRequest: async (url, init) => {
+            console.log('Creating user');
+            return { url, init };
+          },
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### `endpoint()` Function
+
+For full control over endpoint configuration:
+
+```typescript
+import { endpoint } from 'endpoint-fetcher';
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      search: endpoint<SearchInput, User[], ApiError>({
+        method: 'POST',
+        path: '/users/search',
+        handler: async ({ input, fetch, baseUrl, path }) => {
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(input),
+          });
+          return response.json();
+        },
+        hooks: {
+          beforeRequest: async (url, init) => {
+            console.log('Searching users');
+            return { url, init };
+          },
+        },
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### `method`
+
+HTTP method for the endpoint. One of: `'GET'`, `'POST'`, `'PUT'`, `'PATCH'`, `'DELETE'`.
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: endpoint<void, User[]>({ method: 'GET', path: '/users' }),
+      create: endpoint<CreateUserInput, User>({ method: 'POST', path: '/users' }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### `path`
+
+URL path as a string or function:
+
+**Static path:**
+```typescript
+const listUsers = get<void, User[]>('/users');
+```
+
+**Dynamic path:**
+```typescript
+const getUser = get<{ id: string }, User>((input) => `/users/${input.id}`);
+```
+
+**Complex path with query params:**
+```typescript
+const searchUsers = get<SearchParams, User[]>((input) => {
+  const params = new URLSearchParams();
+  if (input.query) params.set('q', input.query);
+  if (input.limit) params.set('limit', input.limit.toString());
+  return `/users/search?${params}`;
+});
+```
+
+### `handler`
+
+Optional custom handler function for non-standard behavior:
+
+**Signature:**
+```typescript
+handler?: (params: {
+  input: TInput;
+  fetch: typeof fetch;
+  method: HttpMethod;
+  path: string;
+  baseUrl: string;
+}) => Promise<TOutput>;
+```
+
+**Example: File upload**
+```typescript
+const uploadFile = post<{ file: File; name: string }, { url: string }>(
+  '/files',
+  async ({ input, fetch, baseUrl, path }) => {
+    const formData = new FormData();
+    formData.append('file', input.file);
+    formData.append('name', input.name);
+    
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      body: formData,
+    });
+    
+    return response.json();
+  }
+);
+```
+
+### `hooks`
+
+Optional endpoint-specific hooks:
+
+```typescript
+const createUser = post<CreateUserInput, User>(
+  '/users',
+  undefined,
+  {
+    beforeRequest: async (url, init) => {
+      console.log('Creating user');
+      return { url, init };
+    },
+    afterResponse: async (response) => {
+      console.log('User created');
+      return response;
+    },
+    onError: async (error) => {
+      console.error('Failed to create user:', error);
+    },
+  }
+);
+```
+
+## Group Configuration
+
+Configure groups with shared settings:
+
+### `group()` Function
+
+```typescript
+import { group } from 'endpoint-fetcher';
+
+const api = createApiClient({
+  admin: group({
+    hooks: { /* ... */ },
+    endpoints: { /* ... */ },
+    groups: { /* ... */ },
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### `hooks`
+
+Optional hooks applied to all endpoints in the group:
+
+```typescript
+const api = createApiClient({
+  protected: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        const token = localStorage.getItem('jwt');
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${token}`,
+            }
+          }
+        };
+      },
+    },
+    endpoints: {
+      profile: get<void, User>('/profile'),
+      settings: get<void, Settings>('/settings'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### `endpoints`
+
+Object mapping endpoint names to configurations:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+      getById: get<{ id: string }, User>((input) => `/users/${input.id}`),
+      create: post<CreateUserInput, User>('/users'),
+      update: patch<UpdateUserInput, User>((input) => `/users/${input.id}`),
+      delete: del<{ id: string }, void>((input) => `/users/${input.id}`),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### `groups`
+
+Optional nested groups:
+
+```typescript
+const api = createApiClient({
+  admin: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        // Applied to all admin endpoints
+        return { url, init };
+      },
+    },
+    groups: {
+      users: group({
+        endpoints: {
+          list: get<void, User[]>('/admin/users'),
+        }
+      }),
+      posts: group({
+        endpoints: {
+          list: get<void, Post[]>('/admin/posts'),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+## Complete Configuration Example
+
+Here's a real-world example with all options:
+
+```typescript
+import { createApiClient, group, get, post, patch, del } from 'endpoint-fetcher';
+import { cache } from '@endpoint-fetcher/cache';
+
+// Custom fetch with logging
+const fetchWithLogging: typeof fetch = async (input, init) => {
+  const start = Date.now();
+  const response = await fetch(input, init);
+  const duration = Date.now() - start;
+  console.log(`${init?.method} ${input} - ${response.status} (${duration}ms)`);
+  return response;
+};
+
+const api = createApiClient(
+  {
+    // Public endpoints
+    public: group({
+      endpoints: {
+        health: get<void, { status: string }>('/health'),
+        posts: get<void, Post[]>('/posts'),
+      }
+    }),
+    
+    // Protected endpoints
+    protected: group({
+      hooks: {
+        beforeRequest: async (url, init) => {
+          const token = localStorage.getItem('jwt');
+          return {
+            url,
+            init: {
+              ...init,
+              headers: {
+                ...init.headers,
+                Authorization: `Bearer ${token}`,
+              }
+            }
+          };
+        },
+      },
+      endpoints: {
+        me: get<void, User>('/me'),
+      },
+      groups: {
+        posts: group({
+          endpoints: {
+            list: get<void, Post[]>('/user/posts'),
+            create: post<CreatePostInput, Post>('/user/posts'),
+            update: patch<UpdatePostInput, Post>((input) => `/user/posts/${input.id}`),
+            delete: del<{ id: string }, void>((input) => `/user/posts/${input.id}`),
+          }
+        }),
+      }
+    }),
+    
+    // Admin endpoints
+    admin: group({
+      hooks: {
+        beforeRequest: async (url, init) => {
+          const adminToken = localStorage.getItem('adminToken');
+          return {
+            url,
+            init: {
+              ...init,
+              headers: {
+                ...init.headers,
+                Authorization: `Bearer ${adminToken}`,
+                'X-Admin-Request': 'true',
+              }
+            }
+          };
+        },
+      },
+      groups: {
+        users: group({
+          endpoints: {
+            list: get<void, User[]>('/admin/users'),
+            ban: post<{ id: string }, void>((input) => `/admin/users/${input.id}/ban`),
+          }
+        }),
+      }
+    }),
+  },
+  {
+    baseUrl: process.env.VITE_API_URL || 'https://api.example.com',
+    
+    defaultHeaders: {
+      'Content-Type': 'application/json',
+      'X-Client-Version': '1.0.0',
+    },
+    
+    fetch: fetchWithLogging,
+    
+    hooks: {
+      beforeRequest: async (url, init) => {
+        // Add request ID to all requests
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              'X-Request-ID': crypto.randomUUID(),
+            }
+          }
+        };
+      },
+      
+      afterResponse: async (response, url, init) => {
+        // Handle token refresh on 401
+        if (response.status === 401 && !url.includes('/auth/')) {
+          const newToken = await refreshToken();
+          localStorage.setItem('jwt', newToken);
+          
+          return fetch(url, {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${newToken}`,
+            },
+          });
+        }
+        
+        return response;
+      },
+      
+      onError: async (error) => {
+        console.error('Global error handler:', error);
+      },
+    },
+    
+    plugins: [
+      cache({ ttl: 300 }),
+    ],
+  }
+);
+
+export default api;
+```
+
+## Next Steps
+
+Now that you understand all configuration options:
+
+- [Error Handling](/error-handling) - Learn error types and strategies
+- [Plugins](/plugins) - Extend with caching, retries, and more
+- [Custom Handlers](/custom-handlers) - Handle special cases
+- [Advanced Examples](/advanced-examples) - See real-world configurations
