@@ -1,0 +1,683 @@
+# TypeScript Types
+
+Master the TypeScript types that make endpoint-fetcher fully type-safe.
+
+## Type Parameters
+
+All endpoint helpers and the `endpoint()` function accept three generic type parameters:
+
+```typescript
+get<TInput, TOutput, TError>()
+post<TInput, TOutput, TError>()
+put<TInput, TOutput, TError>()
+patch<TInput, TOutput, TError>()
+del<TInput, TOutput, TError>()
+endpoint<TInput, TOutput, TError>()
+```
+
+### `TInput` - Request Parameters
+
+The shape of data passed to the endpoint:
+
+```typescript
+// No input needed
+const listUsers = get<void, User[]>('/users');
+
+// Simple input
+const getUser = get<{ id: string }, User>((input) => `/users/${input.id}`);
+
+// Complex input
+type SearchParams = {
+  query: string;
+  filters?: {
+    status?: 'active' | 'inactive';
+    role?: 'admin' | 'user';
+  };
+  page?: number;
+  limit?: number;
+};
+
+const searchUsers = get<SearchParams, User[]>((input) => {
+  const params = new URLSearchParams({ q: input.query });
+  if (input.page) params.set('page', input.page.toString());
+  return `/users/search?${params}`;
+});
+
+// POST with body
+type CreateUserInput = {
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+};
+
+const createUser = post<CreateUserInput, User>('/users');
+```
+
+### `TOutput` - Response Type
+
+The shape of data returned from the endpoint:
+
+```typescript
+// Simple response
+type User = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+const getUser = get<{ id: string }, User>((input) => `/users/${input.id}`);
+
+// Array response
+const listUsers = get<void, User[]>('/users');
+
+// Paginated response
+type PaginatedResponse<T> = {
+  data: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
+
+const listUsersPaginated = get<{ page: number }, PaginatedResponse<User>>(
+  (input) => `/users?page=${input.page}`
+);
+
+// No response (void)
+const deleteUser = del<{ id: string }, void>((input) => `/users/${input.id}`);
+```
+
+### `TError` - Error Type
+
+The shape of error responses (defaults to `any`):
+
+```typescript
+// Simple error
+type ApiError = {
+  message: string;
+};
+
+const getUser = get<{ id: string }, User, ApiError>(
+  (input) => `/users/${input.id}`
+);
+
+// Detailed error
+type ValidationError = {
+  message: string;
+  code: string;
+  errors: Array<{
+    field: string;
+    message: string;
+  }>;
+};
+
+const createUser = post<CreateUserInput, User, ValidationError>('/users');
+
+// Different errors per endpoint
+type NotFoundError = { message: string; resourceId: string };
+type AuthError = { message: string; code: 'UNAUTHORIZED' | 'FORBIDDEN' };
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      getById: get<{ id: string }, User, NotFoundError>(
+        (input) => `/users/${input.id}`
+      ),
+    }
+  }),
+  auth: group({
+    endpoints: {
+      login: post<LoginInput, AuthResponse, AuthError>('/auth/login'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+## Helper Function Signatures
+
+### `get<TInput, TOutput, TError>()`
+
+```typescript
+function get<TInput = void, TOutput = any, TError = any>(
+  path: string | ((input: TInput) => string),
+  handler?: CustomHandler<TInput, TOutput>,
+  hooks?: Hooks
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Examples:**
+
+```typescript
+// Minimal
+const list = get<void, User[]>('/users');
+
+// With input
+const getById = get<{ id: string }, User>((input) => `/users/${input.id}`);
+
+// With error type
+const getById = get<{ id: string }, User, ApiError>((input) => `/users/${input.id}`);
+
+// With custom handler
+const download = get<{ id: string }, Blob>(
+  (input) => `/files/${input.id}`,
+  async ({ fetch, baseUrl, path }) => {
+    const response = await fetch(`${baseUrl}${path}`, { method: 'GET' });
+    return response.blob();
+  }
+);
+
+// With hooks
+const create = get<void, User[]>(
+  '/users',
+  undefined,
+  {
+    beforeRequest: async (url, init) => ({ url, init }),
+  }
+);
+```
+
+### `post<TInput, TOutput, TError>()`
+
+```typescript
+function post<TInput, TOutput = any, TError = any>(
+  path: string | ((input: TInput) => string),
+  handler?: CustomHandler<TInput, TOutput>,
+  hooks?: Hooks
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Note:** `TInput` is required (no default) since POST usually needs a body.
+
+### `put<TInput, TOutput, TError>()`
+
+Same signature as `post()`.
+
+### `patch<TInput, TOutput, TError>()`
+
+Same signature as `post()`.
+
+### `del<TInput, TOutput, TError>()`
+
+```typescript
+function del<TInput = void, TOutput = any, TError = any>(
+  path: string | ((input: TInput) => string),
+  handler?: CustomHandler<TInput, TOutput>,
+  hooks?: Hooks
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Note:** `TInput` defaults to `void` since DELETE often only needs URL parameters.
+
+### `endpoint<TInput, TOutput, TError>()`
+
+```typescript
+function endpoint<TInput = any, TOutput = any, TError = any>(
+  config: EndpointConfig<TInput, TOutput, TError>
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Example:**
+
+```typescript
+const searchUsers = endpoint<SearchInput, User[], ApiError>({
+  method: 'POST',
+  path: '/users/search',
+  handler: async ({ input, fetch, baseUrl, path }) => {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return response.json();
+  },
+});
+```
+
+### `group<T>()`
+
+```typescript
+function group<T extends GroupConfig>(config: T): T
+```
+
+**Example:**
+
+```typescript
+const usersGroup = group({
+  hooks: {
+    beforeRequest: async (url, init) => ({ url, init }),
+  },
+  endpoints: {
+    list: get<void, User[]>('/users'),
+  },
+});
+```
+
+## Type Safety Examples
+
+### Input Type Safety
+
+TypeScript enforces the input type:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      getById: get<{ id: string }, User>((input) => `/users/${input.id}`),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// ✅ Correct
+await api.users.getById({ id: '123' });
+
+// ❌ TypeScript error: Property 'id' is missing
+await api.users.getById({});
+
+// ❌ TypeScript error: Type 'number' is not assignable to type 'string'
+await api.users.getById({ id: 123 });
+```
+
+### Output Type Safety
+
+TypeScript infers the return type:
+
+```typescript
+type User = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      getById: get<{ id: string }, User>((input) => `/users/${input.id}`),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+const user = await api.users.getById({ id: '123' });
+
+// ✅ TypeScript knows these properties exist
+console.log(user.id);
+console.log(user.name);
+console.log(user.email);
+
+// ❌ TypeScript error: Property 'foo' does not exist
+console.log(user.foo);
+```
+
+### Error Type Safety
+
+Error types are documented via the third parameter:
+
+```typescript
+type ValidationError = {
+  message: string;
+  errors: Array<{ field: string; message: string }>;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      create: post<CreateUserInput, User, ValidationError>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+try {
+  await api.users.create({ name: 'John', email: 'invalid' });
+} catch (err: unknown) {
+  const error = err as { status: number; error: ValidationError };
+  
+  // ✅ TypeScript knows the error shape
+  console.log(error.error.message);
+  error.error.errors.forEach(e => {
+    console.log(`${e.field}: ${e.message}`);
+  });
+}
+```
+
+### Autocomplete Throughout
+
+TypeScript provides autocomplete at every level:
+
+```typescript
+const api = createApiClient({
+  admin: group({
+    groups: {
+      users: group({
+        endpoints: {
+          list: get<void, User[]>('/admin/users'),
+          ban: post<{ id: string }, void>((input) => `/admin/users/${input.id}/ban`),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Autocomplete suggests:
+api.              // → admin
+api.admin.        // → users
+api.admin.users.  // → list, ban
+
+// Autocomplete for inputs:
+api.admin.users.ban({ id: '123' }); // → suggests 'id' property
+```
+
+## Best Practices
+
+### Define Clear Types
+
+Create well-named types for inputs and outputs:
+
+```typescript
+// ✅ Good - clear, reusable types
+type CreateUserInput = {
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+};
+
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+  createdAt: string;
+};
+
+type ApiError = {
+  message: string;
+  code: string;
+};
+
+const createUser = post<CreateUserInput, User, ApiError>('/users');
+
+// ❌ Avoid - inline types are hard to maintain
+const createUser = post<
+  { name: string; email: string; role: 'admin' | 'user' },
+  { id: string; name: string; email: string; role: 'admin' | 'user'; createdAt: string },
+  { message: string; code: string }
+>('/users');
+```
+
+### Use Utility Types
+
+Leverage TypeScript utility types:
+
+```typescript
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+  createdAt: string;
+  updatedAt: string;
+};
+
+// Omit fields not needed for creation
+type CreateUserInput = Omit<User, 'id' | 'createdAt' | 'updatedAt'>;
+
+// Partial for updates
+type UpdateUserInput = Partial<User> & { id: string };
+
+// Pick specific fields
+type UserSummary = Pick<User, 'id' | 'name'>;
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      create: post<CreateUserInput, User>('/users'),
+      update: patch<UpdateUserInput, User>((input) => `/users/${input.id}`),
+      getSummary: get<{ id: string }, UserSummary>(
+        (input) => `/users/${input.id}/summary`
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### Reusable Type Patterns
+
+Create reusable generic types:
+
+```typescript
+// Paginated response
+type Paginated<T> = {
+  data: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
+
+// API response wrapper
+type ApiResponse<T> = {
+  success: boolean;
+  data: T;
+  timestamp: string;
+};
+
+// Usage
+const listUsers = get<{ page: number }, Paginated<User>>(
+  (input) => `/users?page=${input.page}`
+);
+
+const getUser = get<{ id: string }, ApiResponse<User>>(
+  (input) => `/users/${input.id}`
+);
+```
+
+### Discriminated Unions for Errors
+
+Use discriminated unions for different error types:
+
+```typescript
+type ValidationError = {
+  type: 'validation';
+  message: string;
+  errors: Array<{ field: string; message: string }>;
+};
+
+type AuthError = {
+  type: 'auth';
+  message: string;
+  code: 'UNAUTHORIZED' | 'FORBIDDEN';
+};
+
+type NotFoundError = {
+  type: 'not_found';
+  message: string;
+  resourceId: string;
+};
+
+type ApiError = ValidationError | AuthError | NotFoundError;
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      create: post<CreateUserInput, User, ApiError>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+try {
+  await api.users.create({ name: 'John', email: 'invalid' });
+} catch (err: unknown) {
+  const error = err as { status: number; error: ApiError };
+  
+  // TypeScript narrows the type based on discriminator
+  switch (error.error.type) {
+    case 'validation':
+      error.error.errors.forEach(e => {
+        console.log(`${e.field}: ${e.message}`);
+      });
+      break;
+    case 'auth':
+      console.log('Auth error:', error.error.code);
+      break;
+    case 'not_found':
+      console.log('Not found:', error.error.resourceId);
+      break;
+  }
+}
+```
+
+### Const Assertions for Literals
+
+Use const assertions for literal types:
+
+```typescript
+const ROLES = ['admin', 'user', 'moderator'] as const;
+type Role = typeof ROLES[number]; // 'admin' | 'user' | 'moderator'
+
+type User = {
+  id: string;
+  name: string;
+  role: Role;
+};
+
+const STATUS = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+  PENDING: 'pending',
+} as const;
+
+type Status = typeof STATUS[keyof typeof STATUS];
+
+type SearchParams = {
+  status?: Status;
+  role?: Role;
+};
+```
+
+## Type Inference
+
+### Inferred Return Types
+
+Let TypeScript infer return types:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// TypeScript infers: Promise<User[]>
+const users = await api.users.list();
+
+// No need to explicitly type:
+// const users: User[] = await api.users.list();
+```
+
+### Extract Types from API Client
+
+Extract types from your API client:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Extract the type of a specific endpoint
+type ListUsersResponse = Awaited<ReturnType<typeof api.users.list>>;
+// Result: User[]
+
+// Extract input type
+type ListUsersInput = Parameters<typeof api.users.list>[0];
+// Result: void
+```
+
+## Common Patterns
+
+### Optional Fields
+
+```typescript
+type CreateUserInput = {
+  name: string;
+  email: string;
+  bio?: string;        // Optional
+  avatar?: string;     // Optional
+};
+```
+
+### Readonly Fields
+
+```typescript
+type User = {
+  readonly id: string;           // Cannot be modified
+  readonly createdAt: string;    // Cannot be modified
+  name: string;
+  email: string;
+};
+```
+
+### Enums vs Union Types
+
+```typescript
+// Union types (preferred)
+type Role = 'admin' | 'user' | 'moderator';
+
+// Enums (if you need runtime values)
+enum Status {
+  Active = 'active',
+  Inactive = 'inactive',
+  Pending = 'pending',
+}
+
+type User = {
+  id: string;
+  role: Role;
+  status: Status;
+};
+```
+
+### Generic Endpoints
+
+```typescript
+function createCRUD<T, TCreate = Omit<T, 'id'>, TUpdate = Partial<T> & { id: string }>() {
+  return group({
+    endpoints: {
+      list: get<void, T[]>('/resource'),
+      getById: get<{ id: string }, T>((input) => `/resource/${input.id}`),
+      create: post<TCreate, T>('/resource'),
+      update: patch<TUpdate, T>((input) => `/resource/${input.id}`),
+      delete: del<{ id: string }, void>((input) => `/resource/${input.id}`),
+    }
+  });
+}
+
+// Usage
+const users = createCRUD<User>();
+```
+
+## Next Steps
+
+Now that you understand TypeScript types:
+
+- [Error Handling](/error-handling) - Type-safe error handling
+- [Custom Handlers](/custom-handlers) - Type handlers correctly
+- [Advanced Examples](/advanced-examples) - Complex type patterns

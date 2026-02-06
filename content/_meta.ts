@@ -5,6 +5,7 @@ export default {
     hooks: "Hierarchical Hooks",
     configuration: "Configuration",
     error_handling: "Error Handling",
+    typescript_types: "TypeScript Types",
     plugins: "Plugins",
 }
 
