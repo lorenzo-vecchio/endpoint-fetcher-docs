@@ -1,0 +1,660 @@
+# Custom Handlers
+
+Override default request/response handling for special cases like file uploads, streaming, or non-JSON APIs.
+
+## When to Use Custom Handlers
+
+Use custom handlers when the default JSON behavior doesn't fit:
+
+- **File uploads** - Send FormData instead of JSON
+- **File downloads** - Return Blob or ArrayBuffer
+- **Non-JSON APIs** - Handle XML, plain text, or other formats
+- **Streaming** - Handle streaming responses
+- **Complex query parameters** - Build intricate URL query strings
+- **Custom authentication** - Special auth flows per endpoint
+- **Response transformation** - Process responses before returning
+
+For most cases, use [hooks](/hooks) instead. Custom handlers are for when you need complete control.
+
+## Handler Signature
+
+Custom handlers receive a context object:
+
+```typescript
+type CustomHandler<TInput, TOutput> = (context: {
+  input: TInput;
+  fetch: typeof fetch;
+  method: HttpMethod;
+  path: string;
+  baseUrl: string;
+}) => Promise<TOutput>;
+```
+
+**Parameters:**
+- `input` - The typed input passed to the endpoint
+- `fetch` - The fetch instance (with hooks applied)
+- `method` - HTTP method ('GET', 'POST', etc.)
+- `path` - The resolved path (after applying input)
+- `baseUrl` - The base URL from client config
+
+## File Uploads
+
+Handle file uploads with FormData:
+
+```typescript
+type UploadInput = {
+  file: File;
+  name: string;
+  category?: string;
+};
+
+type UploadResponse = {
+  id: string;
+  url: string;
+  size: number;
+};
+
+const api = createApiClient({
+  files: group({
+    endpoints: {
+      upload: post<UploadInput, UploadResponse>(
+        '/files',
+        async ({ input, fetch, baseUrl, path }) => {
+          const formData = new FormData();
+          formData.append('file', input.file);
+          formData.append('name', input.name);
+          if (input.category) {
+            formData.append('category', input.category);
+          }
+          
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'POST',
+            body: formData,
+            // Don't set Content-Type - browser sets it with boundary
+          });
+          
+          if (!response.ok) {
+            throw new Error('Upload failed');
+          }
+          
+          return response.json();
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Usage
+const file = new File(['content'], 'document.pdf', { type: 'application/pdf' });
+const result = await api.files.upload({
+  file,
+  name: 'My Document',
+  category: 'reports',
+});
+console.log(`Uploaded: ${result.url}`);
+```
+
+## File Downloads
+
+Handle file downloads returning Blob:
+
+```typescript
+const api = createApiClient({
+  files: group({
+    endpoints: {
+      download: get<{ id: string }, Blob>(
+        (input) => `/files/${input.id}`,
+        async ({ fetch, baseUrl, path }) => {
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'GET',
+          });
+          
+          if (!response.ok) {
+            throw new Error('Download failed');
+          }
+          
+          return response.blob();
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Usage
+const blob = await api.files.download({ id: 'file-123' });
+
+// Create download link
+const url = URL.createObjectURL(blob);
+const a = document.createElement('a');
+a.href = url;
+a.download = 'document.pdf';
+a.click();
+URL.revokeObjectURL(url);
+```
+
+## Non-JSON Responses
+
+Handle plain text, XML, or other formats:
+
+```typescript
+// Plain text
+const api = createApiClient({
+  content: group({
+    endpoints: {
+      getText: get<{ id: string }, string>(
+        (input) => `/content/${input.id}`,
+        async ({ fetch, baseUrl, path }) => {
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'GET',
+          });
+          
+          if (!response.ok) {
+            throw new Error('Failed to fetch text');
+          }
+          
+          return response.text();
+        }
+      ),
+      
+      // XML response
+      getXML: get<{ id: string }, Document>(
+        (input) => `/data/${input.id}.xml`,
+        async ({ fetch, baseUrl, path }) => {
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'GET',
+          });
+          
+          if (!response.ok) {
+            throw new Error('Failed to fetch XML');
+          }
+          
+          const text = await response.text();
+          const parser = new DOMParser();
+          return parser.parseFromString(text, 'text/xml');
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Usage
+const text = await api.content.getText({ id: '123' });
+const xmlDoc = await api.content.getXML({ id: '456' });
+```
+
+## Complex Query Parameters
+
+Build URLs with multiple query parameters:
+
+```typescript
+type SearchParams = {
+  query: string;
+  filters?: {
+    status?: 'active' | 'inactive';
+    role?: string[];
+    createdAfter?: Date;
+  };
+  sort?: {
+    field: string;
+    order: 'asc' | 'desc';
+  };
+  page?: number;
+  limit?: number;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      search: get<SearchParams, User[]>(
+        '/users/search',
+        async ({ input, fetch, baseUrl, path }) => {
+          const params = new URLSearchParams();
+          
+          // Required query
+          params.set('q', input.query);
+          
+          // Optional filters
+          if (input.filters?.status) {
+            params.set('status', input.filters.status);
+          }
+          if (input.filters?.role) {
+            input.filters.role.forEach(role => {
+              params.append('role', role);
+            });
+          }
+          if (input.filters?.createdAfter) {
+            params.set('createdAfter', input.filters.createdAfter.toISOString());
+          }
+          
+          // Sorting
+          if (input.sort) {
+            params.set('sortBy', input.sort.field);
+            params.set('order', input.sort.order);
+          }
+          
+          // Pagination
+          if (input.page) params.set('page', input.page.toString());
+          if (input.limit) params.set('limit', input.limit.toString());
+          
+          const response = await fetch(
+            `${baseUrl}${path}?${params.toString()}`,
+            { method: 'GET' }
+          );
+          
+          if (!response.ok) {
+            throw new Error('Search failed');
+          }
+          
+          return response.json();
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Usage
+const results = await api.users.search({
+  query: 'john',
+  filters: {
+    status: 'active',
+    role: ['admin', 'moderator'],
+    createdAfter: new Date('2024-01-01'),
+  },
+  sort: { field: 'name', order: 'asc' },
+  page: 1,
+  limit: 20,
+});
+```
+
+## Streaming Responses
+
+Handle streaming data:
+
+```typescript
+const api = createApiClient({
+  stream: group({
+    endpoints: {
+      getLogs: get<{ id: string }, ReadableStream>(
+        (input) => `/logs/${input.id}/stream`,
+        async ({ fetch, baseUrl, path }) => {
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'GET',
+          });
+          
+          if (!response.ok || !response.body) {
+            throw new Error('Failed to start stream');
+          }
+          
+          return response.body;
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Usage
+const stream = await api.stream.getLogs({ id: 'app-123' });
+const reader = stream.getReader();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  
+  // Process chunk
+  const text = new TextDecoder().decode(value);
+  console.log(text);
+}
+```
+
+## Custom Authentication
+
+Implement endpoint-specific auth:
+
+```typescript
+const api = createApiClient({
+  oauth: group({
+    endpoints: {
+      exchange: post<{ code: string }, { accessToken: string }>(
+        '/oauth/exchange',
+        async ({ input, fetch, baseUrl, path }) => {
+          // Use Basic auth for this endpoint
+          const credentials = btoa(`${CLIENT_ID}:${CLIENT_SECRET}`);
+          
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Basic ${credentials}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({
+              grant_type: 'authorization_code',
+              code: input.code,
+            }).toString(),
+          });
+          
+          if (!response.ok) {
+            throw new Error('Token exchange failed');
+          }
+          
+          return response.json();
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+## Response Transformation
+
+Transform responses before returning:
+
+```typescript
+type RawUser = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email_address: string;
+  created_at: string;
+};
+
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: Date;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      getById: get<{ id: string }, User>(
+        (input) => `/users/${input.id}`,
+        async ({ fetch, baseUrl, path }) => {
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'GET',
+          });
+          
+          if (!response.ok) {
+            throw new Error('Failed to fetch user');
+          }
+          
+          const raw: RawUser = await response.json();
+          
+          // Transform to our preferred format
+          return {
+            id: raw.id,
+            name: `${raw.first_name} ${raw.last_name}`,
+            email: raw.email_address,
+            createdAt: new Date(raw.created_at),
+          };
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Usage
+const user = await api.users.getById({ id: '123' });
+console.log(user.name);       // "John Doe"
+console.log(user.createdAt);  // Date object
+```
+
+## Error Handling in Handlers
+
+Handle errors within custom handlers:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      create: post<CreateUserInput, User>(
+        '/users',
+        async ({ input, fetch, baseUrl, path }) => {
+          let response: Response;
+          
+          try {
+            response = await fetch(`${baseUrl}${path}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(input),
+            });
+          } catch (error) {
+            // Network error
+            throw new Error('Network error: Unable to reach server');
+          }
+          
+          if (!response.ok) {
+            // Parse error response
+            let errorData;
+            try {
+              errorData = await response.json();
+            } catch {
+              errorData = { message: response.statusText };
+            }
+            
+            // Throw formatted error
+            throw {
+              status: response.status,
+              statusText: response.statusText,
+              error: errorData,
+            };
+          }
+          
+          return response.json();
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+## Combining with Hooks
+
+Custom handlers work with hooks:
+
+```typescript
+const api = createApiClient({
+  files: group({
+    endpoints: {
+      upload: post<UploadInput, UploadResponse>(
+        '/files',
+        async ({ input, fetch, baseUrl, path }) => {
+          // Custom handler for FormData
+          const formData = new FormData();
+          formData.append('file', input.file);
+          
+          // fetch here includes hook modifications
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'POST',
+            body: formData,
+          });
+          
+          return response.json();
+        },
+        {
+          // Endpoint-specific hooks still work
+          beforeRequest: async (url, init) => {
+            console.log('Uploading file...');
+            return { url, init };
+          },
+          afterResponse: async (response) => {
+            console.log('Upload complete');
+            return response;
+          },
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    // Global hooks also apply
+    beforeRequest: async (url, init) => {
+      // Add auth header (even for file uploads)
+      return {
+        url,
+        init: {
+          ...init,
+          headers: {
+            ...init.headers,
+            'Authorization': `Bearer ${getToken()}`,
+          }
+        }
+      };
+    },
+  },
+});
+```
+
+## Testing Custom Handlers
+
+Mock handlers for testing:
+
+```typescript
+const mockFetch: typeof fetch = async (input, init) => {
+  // Simulate file upload
+  if (typeof input === 'string' && input.includes('/files')) {
+    return new Response(
+      JSON.stringify({ id: 'file-123', url: 'https://cdn.example.com/file-123' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+  
+  throw new Error('Unexpected request');
+};
+
+const api = createApiClient({
+  files: group({
+    endpoints: {
+      upload: post<UploadInput, UploadResponse>(
+        '/files',
+        async ({ input, fetch, baseUrl, path }) => {
+          const formData = new FormData();
+          formData.append('file', input.file);
+          
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: 'POST',
+            body: formData,
+          });
+          
+          return response.json();
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  fetch: mockFetch,
+});
+
+// Test
+const file = new File(['test'], 'test.txt');
+const result = await api.files.upload({ file, name: 'test' });
+expect(result.id).toBe('file-123');
+```
+
+## Best Practices
+
+1. **Use hooks when possible** - Custom handlers are for special cases
+2. **Keep handlers focused** - One concern per handler
+3. **Handle errors properly** - Check response.ok and handle network errors
+4. **Type everything** - Use TypeScript for input and output types
+5. **Reuse fetch instance** - Use the provided fetch (includes hooks)
+6. **Document special behavior** - Comment why you need a custom handler
+7. **Test edge cases** - Test error scenarios and edge cases
+
+## Common Mistakes
+
+### ❌ Not using the provided fetch
+
+```typescript
+// Wrong - bypasses hooks
+const handler = async ({ input, baseUrl, path }) => {
+  const response = await window.fetch(`${baseUrl}${path}`, { /* ... */ });
+  return response.json();
+};
+
+// Correct - uses hooks
+const handler = async ({ input, fetch, baseUrl, path }) => {
+  const response = await fetch(`${baseUrl}${path}`, { /* ... */ });
+  return response.json();
+};
+```
+
+### ❌ Forgetting to check response.ok
+
+```typescript
+// Wrong - doesn't handle errors
+const handler = async ({ fetch, baseUrl, path }) => {
+  const response = await fetch(`${baseUrl}${path}`);
+  return response.json(); // Might fail on error responses
+};
+
+// Correct - checks for errors
+const handler = async ({ fetch, baseUrl, path }) => {
+  const response = await fetch(`${baseUrl}${path}`);
+  
+  if (!response.ok) {
+    throw new Error('Request failed');
+  }
+  
+  return response.json();
+};
+```
+
+### ❌ Setting Content-Type for FormData
+
+```typescript
+// Wrong - breaks FormData boundary
+const handler = async ({ input, fetch, baseUrl, path }) => {
+  const formData = new FormData();
+  formData.append('file', input.file);
+  
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'multipart/form-data', // ❌ Don't do this
+    },
+    body: formData,
+  });
+  
+  return response.json();
+};
+
+// Correct - let browser set Content-Type
+const handler = async ({ input, fetch, baseUrl, path }) => {
+  const formData = new FormData();
+  formData.append('file', input.file);
+  
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    body: formData, // Browser adds correct Content-Type with boundary
+  });
+  
+  return response.json();
+};
+```
+
+## Next Steps
+
+Master custom handlers and explore:
+
+- [Hooks](/hooks) - Use hooks for most customization
+- [Plugins](/plugins) - Create reusable handler wrappers
+- [Advanced Examples](/advanced-examples) - Complex handler patterns
