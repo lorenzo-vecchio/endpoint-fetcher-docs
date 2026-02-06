@@ -5,4 +5,7 @@ export default {
     hooks: "Hierarchical Hooks",
     configuration: "Configuration",
     error_handling: "Error Handling",
+    plugins: "Plugins",
 }
+
+// TODO: add new badge to plugins

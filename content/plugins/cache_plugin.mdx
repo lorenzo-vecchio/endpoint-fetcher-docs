@@ -1,0 +1,147 @@
+# Cache Plugin
+
+The official caching plugin for `endpoint-fetcher`. It provides intelligent, type-safe caching with support for TTL, LRU (Least Recently Used) eviction, and custom storage adapters.
+
+## Installation
+
+```bash npm2yarn
+npm install @endpoint-fetcher/cache
+```
+
+> **Note:** Requires `endpoint-fetcher` v2.0.0 or higher.
+
+## Quick Start
+
+Add the `cache` plugin to your client and wrap your endpoint return types with `CachingWrapper<T>` to enable metadata and helper methods.
+
+```typescript
+import { createApiClient, get } from 'endpoint-fetcher';
+import { cache, CachingWrapper } from '@endpoint-fetcher/cache';
+
+const api = createApiClient({
+  users: {
+    endpoints: {
+      // 1. Wrap the return type with CachingWrapper<T>
+      getAll: get<void, CachingWrapper<User[]>>('/users'),
+    }
+  }
+}, {
+  baseUrl: '[https://api.example.com](https://api.example.com)',
+  plugins: [
+    cache({ ttl: 300 }) // Global TTL: 5 minutes
+  ]
+});
+
+// Usage
+const result = await api.users.getAll();
+
+console.log(result.data);      // User[]
+console.log(result.isStale);   // false
+console.log(result.expiresAt); // Date object
+```
+
+---
+
+## CachingWrapper&lt;T&gt;
+
+When an endpoint is cached, the response object includes the following properties and methods to help you manage the data lifecycle.
+
+### Properties
+
+| Property | Type | Description |
+| :--- | :--- | :--- |
+| **`data`** | `T` | The actual API response data. |
+| **`cachedAt`** | `Date` | Timestamp of the original network fetch. |
+| **`expiresAt`** | `Date` | When the entry will be considered stale. |
+| **`isStale`** | `boolean` | Helper to check if the current time has passed the TTL. |
+
+### Methods
+
+* **`refresh()`**: Forces a network re-fetch, updates the cache, and returns the new data.
+* **`invalidate()`**: Immediately removes this specific entry from the cache.
+
+```typescript
+const result = await api.users.getAll();
+
+// Force a network refresh
+const fresh = await result.refresh();
+
+// Remove this specific entry from cache
+result.invalidate();
+```
+
+---
+
+## Configuration
+
+The `cache(config)` function accepts the following options:
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `ttl` | `number` | `300` | Global time-to-live in seconds. |
+| `maxSize` | `number` | `Infinity` | Max number of entries before LRU eviction. |
+| `methods` | `string[]` | `['GET']` | HTTP methods to cache. |
+| `storage` | `CacheStorage` | `Memory` | Custom storage implementation (e.g., localStorage). |
+| `keyGenerator`| `Function` | Default | Logic to generate unique cache keys. |
+
+### Custom Storage
+
+You can persist cache across sessions by providing a custom storage adapter.
+
+```typescript
+const api = createApiClient({...}, {
+  plugins: [
+    cache({
+      ttl: 3600,
+      storage: {
+        get: (key) => JSON.parse(localStorage.getItem(key) || 'null'),
+        set: (key, val) => localStorage.setItem(key, JSON.stringify(val)),
+        delete: (key) => localStorage.removeItem(key),
+        keys: () => Object.keys(localStorage),
+        clear: () => localStorage.clear()
+      }
+    })
+  ]
+});
+```
+
+---
+
+## Cache Management
+
+### Global Clear
+To clear all cached data (e.g., on logout), use the `clearCache` utility.
+
+```typescript
+import { clearCache } from '@endpoint-fetcher/cache';
+
+// Wipes the entire cache storage
+clearCache();
+```
+
+### Stale-While-Revalidate Pattern
+
+Use the `isStale` flag to show cached data immediately while updating in the background.
+
+```typescript
+const result = await api.users.getAll();
+
+// Render cached data immediately
+render(result.data);
+
+// If stale, refresh in the background
+if (result.isStale) {
+  result.refresh().then(fresh => render(fresh.data));
+}
+```
+
+---
+
+## Troubleshooting
+
+### Data is never cached
+* **Check the Type**: Ensure you are using `CachingWrapper<T>`. If the return type is just `T`, the plugin will skip it.
+* **Check the Method**: By default, only `GET` requests are cached. Check your `methods` config if you need to cache `POST` requests.
+
+### Cache persists after refresh
+* The default storage is in-memory. If you are using a custom `localStorage` adapter, the cache will persist across page reloads unless `ttl` is reached or `invalidate()` is called.

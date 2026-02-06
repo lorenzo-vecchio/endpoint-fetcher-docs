@@ -1,0 +1,480 @@
+# Plugins
+
+Extend endpoint-fetcher with reusable functionality through plugins.
+
+## What are Plugins
+
+Plugins are modular extensions that add functionality to your API client. They can:
+
+- Add hooks (authentication, logging, error tracking)
+- Wrap handlers (caching, retries, rate limiting)
+- Modify requests and responses globally
+- Integrate with external services
+
+Plugins are composable - you can use multiple plugins together.
+
+```typescript
+import { createApiClient } from 'endpoint-fetcher';
+import { cache } from '@endpoint-fetcher/cache';
+import { retryPlugin } from './plugins/retry';
+import { authPlugin } from './plugins/auth';
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    authPlugin({ token: 'my-token' }),
+    retryPlugin({ maxRetries: 3 }),
+    cache({ ttl: 300 }),
+  ],
+});
+```
+
+## Using Plugins
+
+### Installing Plugins
+
+Official plugins are published as separate packages:
+
+```bash
+npm install @endpoint-fetcher/cache
+```
+
+### Adding Plugins to Your Client
+
+Add plugins to the `plugins` array in your client configuration:
+
+```typescript
+import { createApiClient, group, get } from 'endpoint-fetcher';
+import { cache } from '@endpoint-fetcher/cache';
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    cache({ ttl: 300 }), // Cache responses for 5 minutes
+  ],
+});
+```
+
+### Plugin Execution Order
+
+Plugins execute in the order they're added:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    loggingPlugin(),      // Executes first
+    authPlugin(),         // Executes second
+    retryPlugin(),        // Executes third
+    cache(),              // Executes last (wraps everything)
+  ],
+});
+```
+
+**For hooks:** Plugins' hooks execute before global/group/endpoint hooks.
+
+**For handler wrappers:** Plugins wrap handlers in order (first plugin is innermost wrapper).
+
+## Creating Custom Plugins
+
+### Plugin Structure
+
+A plugin is a function that returns a `PluginOptions` object:
+
+```typescript
+import { createPlugin } from 'endpoint-fetcher';
+
+export const myPlugin = createPlugin((config: { option: string }) => ({
+  hooks: {
+    beforeRequest: async (url, init) => {
+      // Modify request
+      return { url, init };
+    },
+    afterResponse: async (response) => {
+      // Modify response
+      return response;
+    },
+    onError: async (error) => {
+      // Handle errors
+    },
+  },
+  handlerWrapper: (originalHandler) => {
+    return async (input, context) => {
+      // Wrap handler logic
+      return originalHandler(input, context);
+    };
+  },
+}));
+```
+
+### Simple Plugin with Hooks
+
+Create a logging plugin:
+
+```typescript
+import { createPlugin } from 'endpoint-fetcher';
+
+export const loggingPlugin = createPlugin(() => ({
+  hooks: {
+    beforeRequest: async (url, init) => {
+      console.log(`→ ${init.method} ${url}`);
+      return { url, init };
+    },
+    afterResponse: async (response, url, init) => {
+      console.log(`← ${init.method} ${url} - ${response.status}`);
+      return response;
+    },
+  },
+}));
+
+// Usage
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [loggingPlugin()],
+});
+```
+
+### Plugin with Configuration
+
+Create an authentication plugin:
+
+```typescript
+import { createPlugin } from 'endpoint-fetcher';
+
+type AuthConfig = {
+  token: string;
+  header?: string;
+};
+
+export const authPlugin = createPlugin((config: AuthConfig) => ({
+  hooks: {
+    beforeRequest: async (url, init) => {
+      const headerName = config.header || 'Authorization';
+      const headerValue = config.header ? config.token : `Bearer ${config.token}`;
+      
+      return {
+        url,
+        init: {
+          ...init,
+          headers: {
+            ...init.headers,
+            [headerName]: headerValue,
+          }
+        }
+      };
+    },
+  },
+}));
+
+// Usage
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    authPlugin({ token: 'my-secret-token' }),
+  ],
+});
+```
+
+### Plugin with Handler Wrapper
+
+Create a retry plugin:
+
+```typescript
+import { createPlugin } from 'endpoint-fetcher';
+
+type RetryConfig = {
+  maxRetries: number;
+  delay?: number;
+};
+
+export const retryPlugin = createPlugin((config: RetryConfig) => ({
+  handlerWrapper: (originalHandler) => {
+    return async (input, context) => {
+      let lastError;
+      const delay = config.delay || 1000;
+      
+      for (let i = 0; i <= config.maxRetries; i++) {
+        try {
+          return await originalHandler(input, context);
+        } catch (error) {
+          lastError = error;
+          
+          // Don't retry on client errors (4xx)
+          const err = error as { status?: number };
+          if (err.status && err.status >= 400 && err.status < 500) {
+            throw error;
+          }
+          
+          if (i < config.maxRetries) {
+            console.log(`Retry ${i + 1}/${config.maxRetries}...`);
+            await new Promise(resolve =>
+              setTimeout(resolve, delay * Math.pow(2, i))
+            );
+          }
+        }
+      }
+      
+      throw lastError;
+    };
+  },
+}));
+
+// Usage
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    retryPlugin({ maxRetries: 3, delay: 1000 }),
+  ],
+});
+```
+
+### Plugin with Both Hooks and Handler Wrapper
+
+Create a performance monitoring plugin:
+
+```typescript
+import { createPlugin } from 'endpoint-fetcher';
+
+type PerformanceConfig = {
+  slowThreshold: number; // milliseconds
+};
+
+export const performancePlugin = createPlugin((config: PerformanceConfig) => {
+  const timings = new Map<string, number>();
+  
+  return {
+    hooks: {
+      beforeRequest: async (url, init) => {
+        const key = `${init.method}:${url}`;
+        timings.set(key, Date.now());
+        return { url, init };
+      },
+      afterResponse: async (response, url, init) => {
+        const key = `${init.method}:${url}`;
+        const start = timings.get(key);
+        
+        if (start) {
+          const duration = Date.now() - start;
+          timings.delete(key);
+          
+          if (duration > config.slowThreshold) {
+            console.warn(`Slow request: ${key} took ${duration}ms`);
+          }
+        }
+        
+        return response;
+      },
+    },
+    handlerWrapper: (originalHandler) => {
+      return async (input, context) => {
+        const start = performance.now();
+        
+        try {
+          const result = await originalHandler(input, context);
+          const duration = performance.now() - start;
+          
+          console.log(`${context.method} ${context.path}: ${duration.toFixed(2)}ms`);
+          
+          return result;
+        } catch (error) {
+          const duration = performance.now() - start;
+          console.error(`${context.method} ${context.path} failed after ${duration.toFixed(2)}ms`);
+          throw error;
+        }
+      };
+    },
+  };
+});
+
+// Usage
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    performancePlugin({ slowThreshold: 1000 }),
+  ],
+});
+```
+
+## Plugin Examples
+
+### Rate Limiting Plugin
+
+Limit requests per second:
+
+```typescript
+import { createPlugin } from 'endpoint-fetcher';
+
+type RateLimitConfig = {
+  requestsPerSecond: number;
+};
+
+export const rateLimitPlugin = createPlugin((config: RateLimitConfig) => {
+  let lastRequest = 0;
+  const minInterval = 1000 / config.requestsPerSecond;
+  
+  return {
+    hooks: {
+      beforeRequest: async (url, init) => {
+        const now = Date.now();
+        const timeSinceLastRequest = now - lastRequest;
+        
+        if (timeSinceLastRequest < minInterval) {
+          await new Promise(resolve =>
+            setTimeout(resolve, minInterval - timeSinceLastRequest)
+          );
+        }
+        
+        lastRequest = Date.now();
+        return { url, init };
+      },
+    },
+  };
+});
+```
+
+### Error Tracking Plugin
+
+Send errors to tracking service:
+
+```typescript
+import { createPlugin } from 'endpoint-fetcher';
+
+type ErrorTrackingConfig = {
+  service: 'sentry' | 'datadog';
+  apiKey: string;
+};
+
+export const errorTrackingPlugin = createPlugin((config: ErrorTrackingConfig) => ({
+  hooks: {
+    onError: async (error) => {
+      // Send to tracking service
+      console.error('Tracking error:', error);
+      
+      // Example: Send to Sentry
+      // if (config.service === 'sentry') {
+      //   Sentry.captureException(error);
+      // }
+    },
+  },
+}));
+```
+
+### Request ID Plugin
+
+Add unique request IDs:
+
+```typescript
+import { createPlugin } from 'endpoint-fetcher';
+
+export const requestIdPlugin = createPlugin(() => ({
+  hooks: {
+    beforeRequest: async (url, init) => {
+      return {
+        url,
+        init: {
+          ...init,
+          headers: {
+            ...init.headers,
+            'X-Request-ID': crypto.randomUUID(),
+          }
+        }
+      };
+    },
+  },
+}));
+```
+
+## Combining Multiple Plugins
+
+Plugins work together seamlessly:
+
+```typescript
+import { createApiClient, group, get } from 'endpoint-fetcher';
+import { cache } from '@endpoint-fetcher/cache';
+import { authPlugin } from './plugins/auth';
+import { retryPlugin } from './plugins/retry';
+import { loggingPlugin } from './plugins/logging';
+import { performancePlugin } from './plugins/performance';
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+      getById: get<{ id: string }, User>((input) => `/users/${input.id}`),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    loggingPlugin(),                           // Log all requests
+    authPlugin({ token: getToken() }),         // Add auth header
+    performancePlugin({ slowThreshold: 500 }), // Monitor performance
+    retryPlugin({ maxRetries: 3 }),            // Retry on failure
+    cache({ ttl: 300 }),                       // Cache responses
+  ],
+});
+```
+
+## Best Practices
+
+1. **Keep plugins focused** - Each plugin should do one thing well
+2. **Make plugins configurable** - Accept options for flexibility
+3. **Use TypeScript** - Provide proper types for plugin configuration
+4. **Document your plugins** - Explain what they do and how to configure them
+5. **Test plugins** - Write tests for plugin behavior
+6. **Consider plugin order** - Order matters for execution
+7. **Handle errors gracefully** - Don't let plugin errors crash the app
+
+## Official Plugins
+
+- [Cache Plugin](/plugins/cache) - Response caching with TTL and storage adapters
+
+## Next Steps
+
+Explore plugins further:
+
+- [Cache Plugin](/plugins/cache) - Learn about response caching
+- [Custom Handlers](/custom-handlers) - Combine with custom handlers
+- [Advanced Examples](/advanced-examples) - See complex plugin compositions
