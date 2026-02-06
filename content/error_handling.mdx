@@ -1,0 +1,570 @@
+# Error Handling
+
+Understand error types and implement robust error handling strategies.
+
+## Defining Error Types
+
+Use the third generic parameter to document expected error response structures:
+
+```typescript
+type ApiError = {
+  message: string;
+  code: string;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      create: post<CreateUserInput, User, ApiError>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+### Error Type Structure
+
+When a request fails (non-2xx status), endpoint-fetcher throws an object with this shape:
+
+```typescript
+{
+  status: number;        // HTTP status code (404, 500, etc.)
+  statusText: string;    // HTTP status text ("Not Found", etc.)
+  error: TError;         // Your typed error response body
+}
+```
+
+### Basic Error Handling
+
+```typescript
+type ApiError = { message: string; code: string };
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      getById: get<{ id: string }, User, ApiError>((input) => `/users/${input.id}`),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+try {
+  const user = await api.users.getById({ id: '123' });
+} catch (err: unknown) {
+  const error = err as { status: number; statusText: string; error: ApiError };
+  
+  console.log(`HTTP ${error.status}: ${error.statusText}`);
+  console.log(`Error code: ${error.error.code}`);
+  console.log(`Message: ${error.error.message}`);
+}
+```
+
+## Type-Safe Error Responses
+
+### Simple Error Type
+
+For basic error messages:
+
+```typescript
+type SimpleError = {
+  message: string;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      delete: del<{ id: string }, void, SimpleError>(
+        (input) => `/users/${input.id}`
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+try {
+  await api.users.delete({ id: '123' });
+} catch (err: unknown) {
+  const error = err as { status: number; error: SimpleError };
+  console.error(error.error.message);
+}
+```
+
+### Validation Error Type
+
+For detailed validation errors:
+
+```typescript
+type ValidationError = {
+  message: string;
+  code: string;
+  errors: Array<{
+    field: string;
+    message: string;
+  }>;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      create: post<CreateUserInput, User, ValidationError>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+try {
+  await api.users.create({ name: '', email: 'invalid' });
+} catch (err: unknown) {
+  const error = err as { status: number; error: ValidationError };
+  
+  if (error.status === 400) {
+    console.log(`Validation failed: ${error.error.message}`);
+    error.error.errors.forEach(e => {
+      console.log(`  ${e.field}: ${e.message}`);
+    });
+  }
+}
+```
+
+### Different Error Types Per Endpoint
+
+Different endpoints can have different error structures:
+
+```typescript
+type ValidationError = {
+  message: string;
+  errors: Array<{ field: string; message: string }>;
+};
+
+type AuthError = {
+  message: string;
+  code: 'INVALID_TOKEN' | 'TOKEN_EXPIRED' | 'UNAUTHORIZED';
+};
+
+type NotFoundError = {
+  message: string;
+  resourceId: string;
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      create: post<CreateUserInput, User, ValidationError>('/users'),
+      getById: get<{ id: string }, User, NotFoundError>(
+        (input) => `/users/${input.id}`
+      ),
+    }
+  }),
+  auth: group({
+    endpoints: {
+      verify: post<{ token: string }, { valid: boolean }, AuthError>('/auth/verify'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+## Error Handling Strategies
+
+### Try/Catch Pattern
+
+Standard approach for handling individual requests:
+
+```typescript
+async function fetchUser(id: string) {
+  try {
+    const user = await api.users.getById({ id });
+    return user;
+  } catch (err: unknown) {
+    const error = err as { status: number; error: ApiError };
+    
+    if (error.status === 404) {
+      console.error('User not found');
+      return null;
+    }
+    
+    throw err; // Re-throw unexpected errors
+  }
+}
+```
+
+### Status-Based Error Handling
+
+Handle different HTTP status codes:
+
+```typescript
+type ApiError = { message: string; code: string };
+
+async function makeRequest() {
+  try {
+    return await api.users.create({ name: 'John', email: 'john@example.com' });
+  } catch (err: unknown) {
+    const error = err as { status: number; statusText: string; error: ApiError };
+    
+    switch (error.status) {
+      case 400:
+        console.error('Bad request:', error.error.message);
+        break;
+      case 401:
+        console.error('Unauthorized - please log in');
+        // Redirect to login
+        break;
+      case 403:
+        console.error('Forbidden - insufficient permissions');
+        break;
+      case 404:
+        console.error('Resource not found');
+        break;
+      case 500:
+        console.error('Server error - please try again later');
+        break;
+      default:
+        console.error('Unexpected error:', error.statusText);
+    }
+    
+    throw err;
+  }
+}
+```
+
+### Using Hooks for Global Error Handling
+
+Handle errors globally with `onError` hook:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    onError: async (error) => {
+      // Log all errors to tracking service
+      console.error('API Error:', error);
+      
+      // Send to error tracking
+      // Sentry.captureException(error);
+      
+      // Show user notification
+      const err = error as { status: number; error: { message: string } };
+      if (err.status >= 500) {
+        showNotification('Server error - please try again later');
+      }
+    },
+  },
+});
+```
+
+### Retry on Error
+
+Automatically retry failed requests:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  hooks: {
+    afterResponse: async (response, url, init) => {
+      // Retry on 5xx errors
+      if (response.status >= 500) {
+        const retryCount = parseInt(
+          (init.headers as any)['X-Retry-Count'] || '0'
+        );
+        
+        if (retryCount < 3) {
+          // Wait before retrying (exponential backoff)
+          await new Promise(resolve =>
+            setTimeout(resolve, Math.pow(2, retryCount) * 1000)
+          );
+          
+          return fetch(url, {
+            ...init,
+            headers: {
+              ...init.headers,
+              'X-Retry-Count': (retryCount + 1).toString(),
+            },
+          });
+        }
+      }
+      
+      return response;
+    },
+  },
+});
+```
+
+### Type Guards for Error Checking
+
+Create type guards for better error handling:
+
+```typescript
+type ApiError = { message: string; code: string };
+
+function isApiError(err: unknown): err is { status: number; error: ApiError } {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'status' in err &&
+    'error' in err &&
+    typeof (err as any).error === 'object'
+  );
+}
+
+async function fetchUser(id: string) {
+  try {
+    return await api.users.getById({ id });
+  } catch (err: unknown) {
+    if (isApiError(err)) {
+      console.error(`API Error (${err.status}):`, err.error.message);
+      return null;
+    }
+    
+    // Network error or other unexpected error
+    console.error('Unexpected error:', err);
+    throw err;
+  }
+}
+```
+
+### Error Recovery Pattern
+
+Implement fallback logic for failed requests:
+
+```typescript
+async function getUserWithFallback(id: string): Promise<User | null> {
+  try {
+    return await api.users.getById({ id });
+  } catch (err: unknown) {
+    const error = err as { status: number };
+    
+    if (error.status === 404) {
+      // Not found - return null
+      return null;
+    }
+    
+    if (error.status >= 500) {
+      // Server error - try cache
+      const cached = getCachedUser(id);
+      if (cached) {
+        console.warn('Using cached data due to server error');
+        return cached;
+      }
+    }
+    
+    // No recovery possible
+    throw err;
+  }
+}
+```
+
+## Common Error Patterns
+
+### Authentication Errors
+
+Handle authentication failures:
+
+```typescript
+type AuthError = {
+  message: string;
+  code: 'INVALID_CREDENTIALS' | 'TOKEN_EXPIRED' | 'ACCOUNT_LOCKED';
+};
+
+async function login(email: string, password: string) {
+  try {
+    return await api.auth.login({ email, password });
+  } catch (err: unknown) {
+    const error = err as { status: number; error: AuthError };
+    
+    if (error.status === 401) {
+      switch (error.error.code) {
+        case 'INVALID_CREDENTIALS':
+          return { error: 'Invalid email or password' };
+        case 'TOKEN_EXPIRED':
+          return { error: 'Session expired - please log in again' };
+        case 'ACCOUNT_LOCKED':
+          return { error: 'Account locked - contact support' };
+      }
+    }
+    
+    return { error: 'Login failed - please try again' };
+  }
+}
+```
+
+### Validation Errors
+
+Display field-specific validation errors:
+
+```typescript
+type ValidationError = {
+  message: string;
+  errors: Array<{ field: string; message: string }>;
+};
+
+async function createUser(data: CreateUserInput) {
+  try {
+    return await api.users.create(data);
+  } catch (err: unknown) {
+    const error = err as { status: number; error: ValidationError };
+    
+    if (error.status === 400) {
+      // Convert to field error map
+      const fieldErrors: Record<string, string> = {};
+      error.error.errors.forEach(e => {
+        fieldErrors[e.field] = e.message;
+      });
+      
+      return { fieldErrors };
+    }
+    
+    throw err;
+  }
+}
+
+// Usage in a form
+const result = await createUser({ name: '', email: 'invalid' });
+if (result.fieldErrors) {
+  // Show error for each field
+  // result.fieldErrors.name -> "Name is required"
+  // result.fieldErrors.email -> "Invalid email format"
+}
+```
+
+### Network Errors
+
+Handle network failures separately:
+
+```typescript
+async function makeRequestWithNetworkHandling() {
+  try {
+    return await api.users.list();
+  } catch (err: unknown) {
+    // Check if it's a network error (no status code)
+    if (typeof err === 'object' && err !== null && !('status' in err)) {
+      console.error('Network error - check your connection');
+      showNotification('Unable to connect - please check your internet');
+      return null;
+    }
+    
+    // HTTP error with status code
+    const error = err as { status: number };
+    console.error('HTTP error:', error.status);
+    throw err;
+  }
+}
+```
+
+### User-Friendly Error Messages
+
+Convert API errors to user-friendly messages:
+
+```typescript
+type ApiError = { message: string; code: string };
+
+function getErrorMessage(err: unknown): string {
+  if (typeof err === 'object' && err !== null && 'status' in err) {
+    const error = err as { status: number; error: ApiError };
+    
+    switch (error.status) {
+      case 400:
+        return 'Please check your input and try again';
+      case 401:
+        return 'Please log in to continue';
+      case 403:
+        return 'You don\'t have permission to do this';
+      case 404:
+        return 'We couldn\'t find what you\'re looking for';
+      case 409:
+        return 'This item already exists';
+      case 429:
+        return 'Too many requests - please slow down';
+      case 500:
+      case 502:
+      case 503:
+        return 'Something went wrong on our end - please try again later';
+      default:
+        return error.error?.message || 'Something went wrong';
+    }
+  }
+  
+  return 'Unable to connect - please check your internet connection';
+}
+
+// Usage
+try {
+  await api.users.create(data);
+} catch (err) {
+  const message = getErrorMessage(err);
+  showNotification(message);
+}
+```
+
+## Testing Error Scenarios
+
+### Mocking Errors in Tests
+
+```typescript
+const mockFetch: typeof fetch = async (input, init) => {
+  return new Response(
+    JSON.stringify({ message: 'User not found', code: 'NOT_FOUND' }),
+    {
+      status: 404,
+      statusText: 'Not Found',
+      headers: { 'Content-Type': 'application/json' },
+    }
+  );
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      getById: get<{ id: string }, User, ApiError>(
+        (input) => `/users/${input.id}`
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  fetch: mockFetch,
+});
+
+// Test error handling
+try {
+  await api.users.getById({ id: '123' });
+} catch (err: unknown) {
+  const error = err as { status: number; error: ApiError };
+  expect(error.status).toBe(404);
+  expect(error.error.code).toBe('NOT_FOUND');
+}
+```
+
+## Best Practices
+
+1. **Always type your errors** - Use the third generic parameter to document expected error structures
+2. **Use type assertions in catch blocks** - TypeScript doesn't enforce types in catch, so assert them
+3. **Handle errors at the right level** - Use global hooks for common errors, try/catch for specific ones
+4. **Provide user-friendly messages** - Convert technical errors to readable messages
+5. **Log errors for debugging** - Use `onError` hooks to log to error tracking services
+6. **Implement retry logic** - For transient errors like network issues or 5xx responses
+7. **Test error scenarios** - Mock errors in tests to ensure proper handling
+
+## Next Steps
+
+Master error handling and explore:
+
+- [Plugins](/plugins) - Use plugins like retry and error tracking
+- [Custom Handlers](/custom-handlers) - Handle special error cases
+- [Advanced Examples](/advanced-examples) - Complex error handling patterns

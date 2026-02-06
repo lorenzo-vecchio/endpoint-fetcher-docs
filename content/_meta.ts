@@ -4,4 +4,5 @@ export default {
     groups: "Groups & Organization",
     hooks: "Hierarchical Hooks",
     configuration: "Configuration",
+    error_hamdling: "Error Handling",
 }
