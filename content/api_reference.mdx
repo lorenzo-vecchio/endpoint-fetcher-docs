@@ -1,0 +1,550 @@
+# API Reference
+
+Complete reference for all functions, types, and interfaces.
+
+## Core Functions
+
+### `createApiClient()`
+
+Creates a type-safe API client from endpoint definitions.
+
+**Signature:**
+```typescript
+function createApiClient<TEndpoints extends EndpointDefinitions>(
+  endpoints: TEndpoints,
+  config: ApiConfig
+): Client<TEndpoints>
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `endpoints` | `TEndpoints` | Object mapping names to endpoint configs or groups |
+| `config` | `ApiConfig` | Client configuration object |
+
+**Returns:** Type-safe client with methods for each endpoint.
+
+**Example:**
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+```
+
+---
+
+## Helper Functions
+
+### `get()`
+
+Creates a GET endpoint configuration.
+
+**Signature:**
+```typescript
+function get<TInput = void, TOutput = any, TError = any>(
+  path: string | ((input: TInput) => string),
+  handler?: CustomHandler<TInput, TOutput>,
+  hooks?: Hooks
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | `string \| ((input: TInput) => string)` | Yes | Static path or function returning path |
+| `handler` | `CustomHandler<TInput, TOutput>` | No | Custom request handler |
+| `hooks` | `Hooks` | No | Endpoint-specific hooks |
+
+**Example:**
+```typescript
+const listUsers = get<void, User[]>('/users');
+const getUser = get<{ id: string }, User>((input) => `/users/${input.id}`);
+```
+
+### `post()`
+
+Creates a POST endpoint configuration.
+
+**Signature:**
+```typescript
+function post<TInput, TOutput = any, TError = any>(
+  path: string | ((input: TInput) => string),
+  handler?: CustomHandler<TInput, TOutput>,
+  hooks?: Hooks
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Example:**
+```typescript
+const createUser = post<CreateUserInput, User>('/users');
+```
+
+### `put()`
+
+Creates a PUT endpoint configuration.
+
+**Signature:**
+```typescript
+function put<TInput, TOutput = any, TError = any>(
+  path: string | ((input: TInput) => string),
+  handler?: CustomHandler<TInput, TOutput>,
+  hooks?: Hooks
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Example:**
+```typescript
+const replaceUser = put<User, User>((input) => `/users/${input.id}`);
+```
+
+### `patch()`
+
+Creates a PATCH endpoint configuration.
+
+**Signature:**
+```typescript
+function patch<TInput, TOutput = any, TError = any>(
+  path: string | ((input: TInput) => string),
+  handler?: CustomHandler<TInput, TOutput>,
+  hooks?: Hooks
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Example:**
+```typescript
+const updateUser = patch<Partial<User> & { id: string }, User>(
+  (input) => `/users/${input.id}`
+);
+```
+
+### `del()`
+
+Creates a DELETE endpoint configuration.
+
+**Signature:**
+```typescript
+function del<TInput = void, TOutput = any, TError = any>(
+  path: string | ((input: TInput) => string),
+  handler?: CustomHandler<TInput, TOutput>,
+  hooks?: Hooks
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Example:**
+```typescript
+const deleteUser = del<{ id: string }, void>((input) => `/users/${input.id}`);
+```
+
+### `endpoint()`
+
+Creates a generic endpoint configuration with full control.
+
+**Signature:**
+```typescript
+function endpoint<TInput = any, TOutput = any, TError = any>(
+  config: EndpointConfig<TInput, TOutput, TError>
+): EndpointConfig<TInput, TOutput, TError>
+```
+
+**Example:**
+```typescript
+const searchUsers = endpoint<SearchInput, User[], ApiError>({
+  method: 'POST',
+  path: '/users/search',
+  handler: async ({ input, fetch, baseUrl, path }) => {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return response.json();
+  },
+});
+```
+
+### `group()`
+
+Creates a group configuration for organizing related endpoints.
+
+**Signature:**
+```typescript
+function group<T extends GroupConfig>(config: T): T
+```
+
+**Example:**
+```typescript
+const usersGroup = group({
+  hooks: {
+    beforeRequest: async (url, init) => ({ url, init }),
+  },
+  endpoints: {
+    list: get<void, User[]>('/users'),
+  },
+  groups: {
+    posts: group({
+      endpoints: {
+        list: get<{ userId: string }, Post[]>(
+          (input) => `/users/${input.userId}/posts`
+        ),
+      }
+    }),
+  },
+});
+```
+
+---
+
+## Plugin Functions
+
+### `createPlugin()`
+
+Creates a plugin with proper typing.
+
+**Signature:**
+```typescript
+function createPlugin<TConfig = void>(
+  factory: Plugin<TConfig>
+): Plugin<TConfig>
+```
+
+**Example:**
+```typescript
+export const loggingPlugin = createPlugin(() => ({
+  hooks: {
+    beforeRequest: async (url, init) => {
+      console.log(`→ ${init.method} ${url}`);
+      return { url, init };
+    },
+  },
+}));
+```
+
+---
+
+## Type Definitions
+
+### `ApiConfig`
+
+Configuration for the API client.
+
+```typescript
+type ApiConfig = {
+  baseUrl: string;
+  fetch?: typeof fetch;
+  defaultHeaders?: HeadersInit;
+  hooks?: Hooks;
+  plugins?: PluginOptions[];
+};
+```
+
+**Properties:**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `baseUrl` | `string` | Yes | Base URL for all requests |
+| `fetch` | `typeof fetch` | No | Custom fetch instance |
+| `defaultHeaders` | `HeadersInit` | No | Default headers for all requests |
+| `hooks` | `Hooks` | No | Global hooks |
+| `plugins` | `PluginOptions[]` | No | Array of plugins |
+
+### `EndpointConfig`
+
+Configuration for a single endpoint.
+
+```typescript
+type EndpointConfig<TInput = any, TOutput = any, TError = any> = {
+  method: HttpMethod;
+  path: string | ((input: TInput) => string);
+  hooks?: Hooks;
+  handler?: CustomHandler<TInput, TOutput>;
+};
+```
+
+**Properties:**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `method` | `HttpMethod` | Yes | HTTP method |
+| `path` | `string \| ((input: TInput) => string)` | Yes | Path string or function |
+| `hooks` | `Hooks` | No | Endpoint-specific hooks |
+| `handler` | `CustomHandler<TInput, TOutput>` | No | Custom request handler |
+
+### `GroupConfig`
+
+Configuration for a group of endpoints.
+
+```typescript
+type GroupConfig = {
+  hooks?: Hooks;
+  endpoints?: EndpointDefinitions;
+  groups?: Record<string, GroupConfig>;
+};
+```
+
+**Properties:**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `hooks` | `Hooks` | No | Group-level hooks |
+| `endpoints` | `EndpointDefinitions` | No | Endpoint definitions |
+| `groups` | `Record<string, GroupConfig>` | No | Nested groups |
+
+### `Hooks`
+
+Lifecycle hooks for requests and responses.
+
+```typescript
+type Hooks = {
+  beforeRequest?: (
+    url: string,
+    init: RequestInit
+  ) => Promise<{ url: string; init: RequestInit }> | { url: string; init: RequestInit };
+  
+  afterResponse?: (
+    response: Response,
+    url: string,
+    init: RequestInit
+  ) => Promise<Response> | Response;
+  
+  onError?: (error: unknown) => Promise<void> | void;
+};
+```
+
+**Properties:**
+
+| Hook | Parameters | Returns | Description |
+|------|------------|---------|-------------|
+| `beforeRequest` | `url: string, init: RequestInit` | `{ url, init }` | Called before request |
+| `afterResponse` | `response: Response, url: string, init: RequestInit` | `Response` | Called after response |
+| `onError` | `error: unknown` | `void` | Called on error |
+
+### `CustomHandler`
+
+Custom handler function type.
+
+```typescript
+type CustomHandler<TInput, TOutput> = (context: {
+  input: TInput;
+  fetch: typeof fetch;
+  method: HttpMethod;
+  path: string;
+  baseUrl: string;
+}) => Promise<TOutput>;
+```
+
+**Context Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `input` | `TInput` | Typed input passed to endpoint |
+| `fetch` | `typeof fetch` | Fetch instance (with hooks) |
+| `method` | `HttpMethod` | HTTP method |
+| `path` | `string` | Resolved path |
+| `baseUrl` | `string` | Base URL |
+
+### `PluginOptions`
+
+Options returned by plugin factory functions.
+
+```typescript
+type PluginOptions = {
+  hooks?: Hooks;
+  handlerWrapper?: <TInput, TOutput, TError>(
+    originalHandler: (
+      input: TInput,
+      context: {
+        fetch: typeof fetch;
+        method: HttpMethod;
+        path: string;
+        baseUrl: string;
+      }
+    ) => Promise<TOutput>,
+    endpoint: EndpointConfig<TInput, TOutput, TError>
+  ) => (
+    input: TInput,
+    context: {
+      fetch: typeof fetch;
+      method: HttpMethod;
+      path: string;
+      baseUrl: string;
+    }
+  ) => Promise<TOutput>;
+};
+```
+
+### `HttpMethod`
+
+Supported HTTP methods.
+
+```typescript
+type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+```
+
+### `EndpointDefinitions`
+
+Map of endpoint names to configurations or groups.
+
+```typescript
+type EndpointDefinitions = Record<string, EndpointConfig<any, any> | GroupConfig>;
+```
+
+---
+
+## Error Object Structure
+
+When an endpoint throws an error, it has this structure:
+
+```typescript
+{
+  status: number;        // HTTP status code
+  statusText: string;    // HTTP status text
+  error: TError;         // Typed error response body
+}
+```
+
+**Example:**
+```typescript
+type ApiError = { message: string; code: string };
+
+try {
+  await api.users.getById({ id: '123' });
+} catch (err: unknown) {
+  const error = err as { status: number; statusText: string; error: ApiError };
+  console.log(error.status);      // 404
+  console.log(error.statusText);  // "Not Found"
+  console.log(error.error.code);  // "USER_NOT_FOUND"
+}
+```
+
+---
+
+## Utility Functions
+
+### `buildUrl()`
+
+Builds a complete URL from path and base URL.
+
+**Signature:**
+```typescript
+function buildUrl(path: string, baseUrl: string): string
+```
+
+**Example:**
+```typescript
+import { buildUrl } from 'endpoint-fetcher';
+
+const url = buildUrl('/users', 'https://api.example.com');
+// Result: "https://api.example.com/users"
+```
+
+### `mergeHooks()`
+
+Merges multiple hook objects with proper priority.
+
+**Signature:**
+```typescript
+function mergeHooks(...hooksList: (Hooks | undefined)[]): Hooks
+```
+
+**Example:**
+```typescript
+import { mergeHooks } from 'endpoint-fetcher';
+
+const merged = mergeHooks(
+  { beforeRequest: hook1 },
+  { beforeRequest: hook2 },
+  { afterResponse: hook3 }
+);
+```
+
+### `createEnhancedFetch()`
+
+Creates a fetch instance with hooks applied.
+
+**Signature:**
+```typescript
+function createEnhancedFetch(
+  fetchInstance: typeof fetch,
+  hooks: Hooks
+): typeof fetch
+```
+
+**Example:**
+```typescript
+import { createEnhancedFetch } from 'endpoint-fetcher';
+
+const enhancedFetch = createEnhancedFetch(fetch, {
+  beforeRequest: async (url, init) => ({ url, init }),
+});
+```
+
+### `isGroupConfig()`
+
+Type guard to check if config is a GroupConfig.
+
+**Signature:**
+```typescript
+function isGroupConfig(
+  config: EndpointConfig | GroupConfig
+): config is GroupConfig
+```
+
+**Example:**
+```typescript
+import { isGroupConfig } from 'endpoint-fetcher';
+
+if (isGroupConfig(config)) {
+  // config is GroupConfig
+}
+```
+
+---
+
+## Constants
+
+### HTTP Methods
+
+```typescript
+const methods = {
+  GET: 'GET',
+  POST: 'POST',
+  PUT: 'PUT',
+  PATCH: 'PATCH',
+  DELETE: 'DELETE',
+} as const;
+```
+
+---
+
+## Type Utilities
+
+### Extract Endpoint Input Type
+
+```typescript
+type ExtractInput<T> = T extends EndpointConfig<infer TInput, any, any>
+  ? TInput
+  : never;
+```
+
+### Extract Endpoint Output Type
+
+```typescript
+type ExtractOutput<T> = T extends EndpointConfig<any, infer TOutput, any>
+  ? TOutput
+  : never;
+```
+
+### Extract Endpoint Error Type
+
+```typescript
+type ExtractError<T> = T extends EndpointConfig<any, any, infer TError>
+  ? TError
+  : never;
+```

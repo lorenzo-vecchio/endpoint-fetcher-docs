@@ -8,6 +8,7 @@ export default {
     typescript_types: "TypeScript Types",
     custom_handlers: "Custom Handlers",
     advanced_examples: "Advanced Examples",
+    api_reference: "API Reference",
     plugins: "Plugins",
 }
 
