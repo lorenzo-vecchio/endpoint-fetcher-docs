@@ -9,6 +9,7 @@ export default {
     custom_handlers: "Custom Handlers",
     advanced_examples: "Advanced Examples",
     api_reference: "API Reference",
+    faq: "FAQ & Troubleshooting",
     plugins: "Plugins",
 }
 
