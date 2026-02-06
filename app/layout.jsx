@@ -38,7 +38,7 @@ export default async function RootLayout({ children }) {
           banner={banner}
           navbar={navbar}
           pageMap={await getPageMap()}
-          docsRepositoryBase="https://github.com/lorenzo-vecchio/endpoint-fetcher-docs"
+          docsRepositoryBase="https://github.com/lorenzo-vecchio/endpoint-fetcher-docs/tree/main"
           footer={footer}
           // ... Your additional layout options
         >
