@@ -13,6 +13,7 @@ const banner = <Banner storageKey="banner-storage-key">✨ New: Plugin Support. 
 const navbar = (
   <Navbar
     logo={<b>endpoint-fetcher</b>}
+    projectLink="https://github.com/lorenzo-vecchio/endpoint-fetcher"
     // ... Your additional navbar options
   />
 )
