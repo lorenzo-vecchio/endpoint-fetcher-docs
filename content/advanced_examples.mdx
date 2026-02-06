@@ -1,0 +1,816 @@
+# Advanced Examples
+
+Real-world, production-ready examples combining multiple features.
+
+## Full REST API Client
+
+Complete CRUD operations with authentication, error handling, and organization:
+
+```typescript
+import { createApiClient, group, get, post, put, patch, del } from 'endpoint-fetcher';
+
+// Types
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+  createdAt: string;
+};
+
+type Post = {
+  id: string;
+  title: string;
+  content: string;
+  userId: string;
+  published: boolean;
+  createdAt: string;
+};
+
+type Comment = {
+  id: string;
+  content: string;
+  postId: string;
+  userId: string;
+  createdAt: string;
+};
+
+type ApiError = {
+  message: string;
+  code: string;
+};
+
+// Token management
+const getToken = () => localStorage.getItem('jwt');
+const setToken = (token: string) => localStorage.setItem('jwt', token);
+
+const api = createApiClient({
+  // Public endpoints
+  public: group({
+    endpoints: {
+      health: get<void, { status: string }>('/health'),
+      posts: get<void, Post[]>('/posts'),
+      post: get<{ id: string }, Post>((input) => `/posts/${input.id}`),
+    }
+  }),
+
+  // Authentication
+  auth: group({
+    endpoints: {
+      login: post<{ email: string; password: string }, { token: string; user: User }, ApiError>('/auth/login'),
+      register: post<{ name: string; email: string; password: string }, { token: string; user: User }, ApiError>('/auth/register'),
+      logout: post<void, void>('/auth/logout'),
+      refresh: post<void, { token: string }>('/auth/refresh'),
+    }
+  }),
+
+  // User endpoints (protected)
+  users: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        const token = getToken();
+        if (!token) throw new Error('Not authenticated');
+        return { url, init };
+      },
+    },
+    endpoints: {
+      me: get<void, User, ApiError>('/users/me'),
+      updateMe: patch<Partial<User>, User, ApiError>('/users/me'),
+    },
+    groups: {
+      posts: group({
+        endpoints: {
+          list: get<void, Post[]>('/users/me/posts'),
+          create: post<Omit<Post, 'id' | 'userId' | 'createdAt'>, Post, ApiError>('/users/me/posts'),
+          update: patch<Partial<Post> & { id: string }, Post, ApiError>(
+            (input) => `/users/me/posts/${input.id}`
+          ),
+          delete: del<{ id: string }, void, ApiError>((input) => `/users/me/posts/${input.id}`),
+        }
+      }),
+      comments: group({
+        endpoints: {
+          list: get<void, Comment[]>('/users/me/comments'),
+          create: post<Omit<Comment, 'id' | 'userId' | 'createdAt'>, Comment, ApiError>('/users/me/comments'),
+          delete: del<{ id: string }, void, ApiError>((input) => `/users/me/comments/${input.id}`),
+        }
+      }),
+    }
+  }),
+
+  // Admin endpoints
+  admin: group({
+    hooks: {
+      beforeRequest: async (url, init) => {
+        const token = getToken();
+        if (!token) throw new Error('Not authenticated');
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              'X-Admin-Request': 'true',
+            }
+          }
+        };
+      },
+    },
+    groups: {
+      users: group({
+        endpoints: {
+          list: get<{ page?: number; limit?: number }, { data: User[]; total: number }>(
+            (input) => {
+              const params = new URLSearchParams();
+              if (input?.page) params.set('page', input.page.toString());
+              if (input?.limit) params.set('limit', input.limit.toString());
+              return `/admin/users?${params}`;
+            }
+          ),
+          get: get<{ id: string }, User, ApiError>((input) => `/admin/users/${input.id}`),
+          ban: post<{ id: string; reason: string }, void, ApiError>(
+            (input) => `/admin/users/${input.id}/ban`
+          ),
+          unban: post<{ id: string }, void, ApiError>((input) => `/admin/users/${input.id}/unban`),
+          delete: del<{ id: string }, void, ApiError>((input) => `/admin/users/${input.id}`),
+        }
+      }),
+      posts: group({
+        endpoints: {
+          list: get<void, Post[]>('/admin/posts'),
+          delete: del<{ id: string }, void, ApiError>((input) => `/admin/posts/${input.id}`),
+          feature: post<{ id: string }, Post, ApiError>((input) => `/admin/posts/${input.id}/feature`),
+        }
+      }),
+    }
+  }),
+}, {
+  baseUrl: import.meta.env.VITE_API_URL || 'https://api.example.com',
+  
+  defaultHeaders: {
+    'Content-Type': 'application/json',
+  },
+  
+  hooks: {
+    // Add JWT to all requests
+    beforeRequest: async (url, init) => {
+      const token = getToken();
+      if (token && !url.includes('/auth/')) {
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${token}`,
+            }
+          }
+        };
+      }
+      return { url, init };
+    },
+    
+    // Handle 401 and refresh token
+    afterResponse: async (response, url, init) => {
+      if (response.status === 401 && !url.includes('/auth/')) {
+        try {
+          const { token } = await api.auth.refresh();
+          setToken(token);
+          
+          // Retry original request
+          return fetch(url, {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${token}`,
+            },
+          });
+        } catch {
+          // Refresh failed, redirect to login
+          window.location.href = '/login';
+          throw new Error('Session expired');
+        }
+      }
+      
+      return response;
+    },
+    
+    // Global error tracking
+    onError: async (error) => {
+      console.error('API Error:', error);
+      // Send to error tracking service
+    },
+  },
+});
+
+export default api;
+```
+
+## Authentication Flow with Token Refresh
+
+Complete authentication system with automatic token refresh:
+
+```typescript
+import { createApiClient, group, post, get } from 'endpoint-fetcher';
+
+type AuthTokens = {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: number;
+};
+
+type User = {
+  id: string;
+  email: string;
+  name: string;
+};
+
+class TokenManager {
+  private accessToken: string | null = null;
+  private refreshToken: string | null = null;
+  private refreshPromise: Promise<string> | null = null;
+  
+  constructor() {
+    this.loadTokens();
+  }
+  
+  private loadTokens() {
+    this.accessToken = localStorage.getItem('accessToken');
+    this.refreshToken = localStorage.getItem('refreshToken');
+  }
+  
+  setTokens(tokens: AuthTokens) {
+    this.accessToken = tokens.accessToken;
+    this.refreshToken = tokens.refreshToken;
+    localStorage.setItem('accessToken', tokens.accessToken);
+    localStorage.setItem('refreshToken', tokens.refreshToken);
+  }
+  
+  getAccessToken(): string | null {
+    return this.accessToken;
+  }
+  
+  async refresh(refreshFn: () => Promise<AuthTokens>): Promise<string> {
+    // Prevent multiple simultaneous refresh calls
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+    
+    this.refreshPromise = (async () => {
+      try {
+        const tokens = await refreshFn();
+        this.setTokens(tokens);
+        return tokens.accessToken;
+      } finally {
+        this.refreshPromise = null;
+      }
+    })();
+    
+    return this.refreshPromise;
+  }
+  
+  clear() {
+    this.accessToken = null;
+    this.refreshToken = null;
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
+  }
+}
+
+const tokenManager = new TokenManager();
+
+const api = createApiClient({
+  auth: group({
+    endpoints: {
+      login: post<{ email: string; password: string }, AuthTokens>('/auth/login'),
+      register: post<{ email: string; password: string; name: string }, AuthTokens>('/auth/register'),
+      logout: post<void, void>('/auth/logout'),
+    }
+  }),
+  
+  users: group({
+    endpoints: {
+      me: get<void, User>('/users/me'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  
+  hooks: {
+    beforeRequest: async (url, init) => {
+      if (url.includes('/auth/login') || url.includes('/auth/register')) {
+        return { url, init };
+      }
+      
+      const token = tokenManager.getAccessToken();
+      if (token) {
+        return {
+          url,
+          init: {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${token}`,
+            }
+          }
+        };
+      }
+      
+      return { url, init };
+    },
+    
+    afterResponse: async (response, url, init) => {
+      if (response.status === 401 && !url.includes('/auth/')) {
+        // Token expired, try to refresh
+        try {
+          const newToken = await tokenManager.refresh(async () => {
+            const refreshToken = localStorage.getItem('refreshToken');
+            const res = await fetch('https://api.example.com/auth/refresh', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ refreshToken }),
+            });
+            
+            if (!res.ok) throw new Error('Refresh failed');
+            return res.json();
+          });
+          
+          // Retry original request with new token
+          return fetch(url, {
+            ...init,
+            headers: {
+              ...init.headers,
+              Authorization: `Bearer ${newToken}`,
+            },
+          });
+        } catch {
+          tokenManager.clear();
+          window.location.href = '/login';
+          throw new Error('Session expired');
+        }
+      }
+      
+      return response;
+    },
+  },
+});
+
+// Login helper
+export async function login(email: string, password: string) {
+  const tokens = await api.auth.login({ email, password });
+  tokenManager.setTokens(tokens);
+  return tokens;
+}
+
+// Logout helper
+export async function logout() {
+  try {
+    await api.auth.logout();
+  } finally {
+    tokenManager.clear();
+    window.location.href = '/login';
+  }
+}
+
+export default api;
+```
+
+## Multi-Environment Setup
+
+Configure API client for different environments:
+
+```typescript
+import { createApiClient, group, get, post } from 'endpoint-fetcher';
+
+type Environment = 'development' | 'staging' | 'production';
+
+const config = {
+  development: {
+    apiUrl: 'http://localhost:3000',
+    enableLogging: true,
+    enableMocking: true,
+  },
+  staging: {
+    apiUrl: 'https://staging-api.example.com',
+    enableLogging: true,
+    enableMocking: false,
+  },
+  production: {
+    apiUrl: 'https://api.example.com',
+    enableLogging: false,
+    enableMocking: false,
+  },
+};
+
+const env = (import.meta.env.VITE_ENV || 'development') as Environment;
+const envConfig = config[env];
+
+// Conditional logging plugin
+const loggingPlugin = () => {
+  if (!envConfig.enableLogging) return { hooks: {} };
+  
+  return {
+    hooks: {
+      beforeRequest: async (url: string, init: RequestInit) => {
+        console.log(`→ ${init.method} ${url}`);
+        return { url, init };
+      },
+      afterResponse: async (response: Response) => {
+        console.log(`← ${response.status}`);
+        return response;
+      },
+    },
+  };
+};
+
+// Mock data for development
+const mockFetch: typeof fetch = async (input, init) => {
+  if (!envConfig.enableMocking) {
+    return fetch(input, init);
+  }
+  
+  const url = typeof input === 'string' ? input : input.toString();
+  
+  // Mock responses
+  if (url.includes('/users')) {
+    return new Response(
+      JSON.stringify([
+        { id: '1', name: 'John Doe', email: 'john@example.com' },
+      ]),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+  
+  return fetch(input, init);
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+      create: post<CreateUserInput, User>('/users'),
+    }
+  }),
+}, {
+  baseUrl: envConfig.apiUrl,
+  fetch: mockFetch,
+  plugins: [loggingPlugin()],
+  defaultHeaders: {
+    'X-Environment': env,
+  },
+});
+
+export default api;
+```
+
+## React Query Integration
+
+Use endpoint-fetcher with React Query:
+
+```typescript
+import { createApiClient, group, get, post, patch, del } from 'endpoint-fetcher';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+
+// API Client
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+      getById: get<{ id: string }, User>((input) => `/users/${input.id}`),
+      create: post<CreateUserInput, User>('/users'),
+      update: patch<UpdateUserInput, User>((input) => `/users/${input.id}`),
+      delete: del<{ id: string }, void>((input) => `/users/${input.id}`),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Query keys
+const userKeys = {
+  all: ['users'] as const,
+  lists: () => [...userKeys.all, 'list'] as const,
+  list: (filters: string) => [...userKeys.lists(), { filters }] as const,
+  details: () => [...userKeys.all, 'detail'] as const,
+  detail: (id: string) => [...userKeys.details(), id] as const,
+};
+
+// Hooks
+export function useUsers() {
+  return useQuery({
+    queryKey: userKeys.lists(),
+    queryFn: () => api.users.list(),
+  });
+}
+
+export function useUser(id: string) {
+  return useQuery({
+    queryKey: userKeys.detail(id),
+    queryFn: () => api.users.getById({ id }),
+    enabled: !!id,
+  });
+}
+
+export function useCreateUser() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (data: CreateUserInput) => api.users.create(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: userKeys.lists() });
+    },
+  });
+}
+
+export function useUpdateUser() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (data: UpdateUserInput) => api.users.update(data),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: userKeys.detail(variables.id) });
+      queryClient.invalidateQueries({ queryKey: userKeys.lists() });
+    },
+  });
+}
+
+export function useDeleteUser() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (id: string) => api.users.delete({ id }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: userKeys.lists() });
+    },
+  });
+}
+
+// Usage in components
+function UsersList() {
+  const { data: users, isLoading } = useUsers();
+  const createUser = useCreateUser();
+  const deleteUser = useDeleteUser();
+  
+  if (isLoading) return <div>Loading...</div>;
+  
+  return (
+    <div>
+      {users?.map(user => (
+        <div key={user.id}>
+          {user.name}
+          <button onClick={() => deleteUser.mutate(user.id)}>Delete</button>
+        </div>
+      ))}
+      <button onClick={() => createUser.mutate({ name: 'New User', email: 'new@example.com' })}>
+        Add User
+      </button>
+    </div>
+  );
+}
+```
+
+## SWR Integration
+
+Use endpoint-fetcher with SWR:
+
+```typescript
+import { createApiClient, group, get } from 'endpoint-fetcher';
+import useSWR from 'swr';
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+      getById: get<{ id: string }, User>((input) => `/users/${input.id}`),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Hooks
+export function useUsers() {
+  return useSWR('/users', () => api.users.list());
+}
+
+export function useUser(id: string | null) {
+  return useSWR(
+    id ? `/users/${id}` : null,
+    () => api.users.getById({ id: id! })
+  );
+}
+
+// Usage
+function UserProfile({ userId }: { userId: string }) {
+  const { data: user, error, isLoading } = useUser(userId);
+  
+  if (isLoading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  if (!user) return null;
+  
+  return <div>{user.name}</div>;
+}
+```
+
+## Complex Hook Composition
+
+Combine multiple hooks for sophisticated behavior:
+
+```typescript
+import { createApiClient, group, get, post } from 'endpoint-fetcher';
+
+// Request ID tracking
+const requestIdPlugin = () => ({
+  hooks: {
+    beforeRequest: async (url: string, init: RequestInit) => {
+      return {
+        url,
+        init: {
+          ...init,
+          headers: {
+            ...init.headers,
+            'X-Request-ID': crypto.randomUUID(),
+          }
+        }
+      };
+    },
+  },
+});
+
+// Performance monitoring
+const performancePlugin = () => {
+  const timings = new Map<string, number>();
+  
+  return {
+    hooks: {
+      beforeRequest: async (url: string, init: RequestInit) => {
+        const key = `${init.method}:${url}`;
+        timings.set(key, Date.now());
+        return { url, init };
+      },
+      afterResponse: async (response: Response, url: string, init: RequestInit) => {
+        const key = `${init.method}:${url}`;
+        const start = timings.get(key);
+        
+        if (start) {
+          const duration = Date.now() - start;
+          console.log(`${key}: ${duration}ms`);
+          timings.delete(key);
+          
+          // Send to analytics
+          if (duration > 1000) {
+            console.warn(`Slow request: ${key}`);
+          }
+        }
+        
+        return response;
+      },
+    },
+  };
+};
+
+// Rate limiting per endpoint
+const rateLimitPlugin = () => {
+  const limits = new Map<string, { count: number; resetAt: number }>();
+  
+  return {
+    hooks: {
+      beforeRequest: async (url: string, init: RequestInit) => {
+        const key = `${init.method}:${url}`;
+        const now = Date.now();
+        const limit = limits.get(key);
+        
+        if (limit && limit.resetAt > now) {
+          if (limit.count >= 10) {
+            throw new Error('Rate limit exceeded');
+          }
+          limit.count++;
+        } else {
+          limits.set(key, { count: 1, resetAt: now + 60000 });
+        }
+        
+        return { url, init };
+      },
+    },
+  };
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    requestIdPlugin(),
+    performancePlugin(),
+    rateLimitPlugin(),
+  ],
+  hooks: {
+    beforeRequest: async (url, init) => {
+      // Global auth
+      const token = getToken();
+      return {
+        url,
+        init: {
+          ...init,
+          headers: {
+            ...init.headers,
+            Authorization: `Bearer ${token}`,
+          }
+        }
+      };
+    },
+  },
+});
+```
+
+## Pagination Pattern
+
+Handle paginated responses:
+
+```typescript
+type PaginatedResponse<T> = {
+  data: T[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+};
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<{ page?: number; limit?: number }, PaginatedResponse<User>>(
+        (input) => {
+          const params = new URLSearchParams();
+          if (input?.page) params.set('page', input.page.toString());
+          if (input?.limit) params.set('limit', input.limit.toString());
+          return `/users?${params}`;
+        }
+      ),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+});
+
+// Helper for infinite scroll
+async function* fetchAllUsers() {
+  let page = 1;
+  let hasMore = true;
+  
+  while (hasMore) {
+    const response = await api.users.list({ page, limit: 50 });
+    yield response.data;
+    
+    hasMore = page < response.pagination.totalPages;
+    page++;
+  }
+}
+
+// Usage
+for await (const users of fetchAllUsers()) {
+  console.log(`Fetched ${users.length} users`);
+  // Process batch
+}
+```
+
+## Server-Side Usage (Node.js)
+
+Use endpoint-fetcher in Node.js:
+
+```typescript
+import { createApiClient, group, get, post } from 'endpoint-fetcher';
+import fetch from 'node-fetch';
+
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+      create: post<CreateUserInput, User>('/users'),
+    }
+  }),
+}, {
+  baseUrl: process.env.API_URL || 'https://api.example.com',
+  fetch: fetch as any, // Use node-fetch
+  defaultHeaders: {
+    'User-Agent': 'MyApp/1.0',
+  },
+});
+
+// Server-side function
+export async function getUsersForSSR() {
+  try {
+    const users = await api.users.list();
+    return { users, error: null };
+  } catch (error) {
+    console.error('Failed to fetch users:', error);
+    return { users: [], error: 'Failed to load users' };
+  }
+}
+```

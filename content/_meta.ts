@@ -7,6 +7,7 @@ export default {
     error_handling: "Error Handling",
     typescript_types: "TypeScript Types",
     custom_handlers: "Custom Handlers",
+    advanced_examples: "Advanced Examples",
     plugins: "Plugins",
 }
 
