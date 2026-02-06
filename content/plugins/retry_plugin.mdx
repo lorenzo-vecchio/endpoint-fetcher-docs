@@ -1,0 +1,358 @@
+import { Callout } from 'nextra/components'
+
+# Retry Plugin
+
+The official retry plugin for endpoint-fetcher. It provides intelligent, configurable retry logic with support for multiple strategies (fixed, linear, exponential backoff), HTTP status code filtering, and custom retry conditions.
+
+<Callout type="info">
+  Check out the code on [GitHub](https://github.com/lorenzo-vecchio/endpoint-fetcher-retry)
+</Callout>
+
+## Installation
+
+```bash npm2yarn
+npm install @endpoint-fetcher/retry
+```
+
+> **Note:** Requires `endpoint-fetcher` v2.0.0 or higher.
+
+## Quick Start
+
+Add the retry plugin to your client to automatically retry failed requests with exponential backoff.
+
+```typescript
+import { createApiClient, get } from 'endpoint-fetcher';
+import { retryPlugin } from '@endpoint-fetcher/retry';
+
+type User = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+const api = createApiClient({
+  getUser: get<{ id: string }, User>((input) => `/users/${input.id}`),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    retryPlugin({
+      maxRetries: 3,
+      strategy: 'exponential',
+      baseDelay: 1000,
+    }),
+  ],
+});
+
+// The API will automatically retry failed requests
+const user = await api.getUser({ id: '123' });
+```
+
+## Configuration
+
+The `retryPlugin(config)` function accepts the following options:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxRetries` | `number` | `3` | Maximum number of retry attempts |
+| `baseDelay` | `number` | `1000` | Base delay in milliseconds |
+| `maxDelay` | `number` | `30000` | Maximum delay in milliseconds |
+| `strategy` | `'fixed' \| 'linear' \| 'exponential'` | `'exponential'` | Retry strategy to use |
+| `shouldRetry` | `(error: unknown, attempt: number) => boolean` | Checks for 5xx status codes | Custom retry condition function |
+| `onRetry` | `(error: unknown, attempt: number, delay: number) => void` | `() => {}` | Callback for retry events |
+| `retryStatusCodes` | `number[]` | `[500, 502, 503, 504, 429]` | HTTP status codes that should trigger retry |
+| `retryMethods` | `string[]` | `['GET', 'POST', 'PUT', 'PATCH', 'DELETE']` | HTTP methods that should be retried |
+
+### Default Retry Behavior
+
+By default, the plugin will retry requests that fail with:
+
+- **HTTP status codes**: 500, 502, 503, 504 (server errors) and 429 (rate limiting)
+- **Network errors**: Any error without a status code (network failures, timeouts)
+- **All HTTP methods**: GET, POST, PUT, PATCH, DELETE
+
+The plugin will **NOT** retry:
+- **Client errors**: 4xx status codes (except 429)
+- **Successful responses**: 2xx status codes
+- **Redirects**: 3xx status codes
+
+## Retry Strategies
+
+### Fixed Delay
+
+Always wait the same amount of time between retries.
+
+```typescript
+retryPlugin({
+  strategy: 'fixed',
+  baseDelay: 1000, // Always wait 1 second between retries
+  maxRetries: 3,
+})
+```
+
+**Retry pattern**: 1s, 1s, 1s, ...
+
+### Linear Backoff
+
+Increase delay linearly with each retry attempt.
+
+```typescript
+retryPlugin({
+  strategy: 'linear',
+  baseDelay: 1000, // 1s, 2s, 3s, 4s, ...
+  maxRetries: 3,
+})
+```
+
+**Retry pattern**: 1s, 2s, 3s, ...
+
+### Exponential Backoff (Default)
+
+Double the delay with each retry attempt (exponential backoff).
+
+```typescript
+retryPlugin({
+  strategy: 'exponential',
+  baseDelay: 1000, // 1s, 2s, 4s, 8s, ...
+  maxRetries: 3,
+})
+```
+
+**Retry pattern**: 1s, 2s, 4s, 8s, ...
+
+The delay is calculated as: `delay = min(baseDelay * (strategy === 'exponential' ? 2^(attempt-1) : attempt), maxDelay)`
+
+## Advanced Usage
+
+### Custom Retry Condition
+
+Define your own logic to determine when to retry.
+
+```typescript
+retryPlugin({
+  maxRetries: 3,
+  shouldRetry: (error, attempt) => {
+    const err = error as { status?: number; message?: string };
+    
+    // Retry on network errors
+    if (!err.status) {
+      return true;
+    }
+    
+    // Retry on server errors (5xx)
+    if (err.status >= 500) {
+      return true;
+    }
+    
+    // Retry on rate limiting (429)
+    if (err.status === 429) {
+      return true;
+    }
+    
+    // Retry on specific client errors
+    if (err.status === 408) { // Request Timeout
+      return true;
+    }
+    
+    // Don't retry on other client errors
+    return false;
+  },
+})
+```
+
+### Retry Events Monitoring
+
+Monitor retry attempts with the `onRetry` callback.
+
+```typescript
+retryPlugin({
+  maxRetries: 3,
+  onRetry: (error, attempt, delay) => {
+    console.log(`Retry attempt ${attempt} after ${delay}ms`);
+    
+    const err = error as { status?: number; statusText?: string };
+    if (err.status) {
+      console.error(`HTTP ${err.status}: ${err.statusText}`);
+    } else {
+      console.error('Network error:', error);
+    }
+    
+    // You can also send metrics to your monitoring system
+    sendMetric('retry_attempt', { attempt, delay, status: err.status });
+  },
+})
+```
+
+### Selective Retry by HTTP Method
+
+Only retry specific HTTP methods (useful for idempotent operations).
+
+```typescript
+retryPlugin({
+  maxRetries: 3,
+  retryMethods: ['GET'], // Only retry GET requests (idempotent)
+  retryStatusCodes: [500, 502, 503, 504, 429],
+})
+```
+
+### Combining with Other Plugins
+
+Use the retry plugin together with other endpoint-fetcher plugins.
+
+```typescript
+import { createApiClient } from 'endpoint-fetcher';
+import { retryPlugin } from '@endpoint-fetcher/retry';
+import { cache } from '@endpoint-fetcher/cache';
+
+const api = createApiClient({
+  getUser: get<{ id: string }, CachingWrapper<User>>((input) => `/users/${input.id}`),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    retryPlugin({
+      maxRetries: 3,
+      strategy: 'exponential',
+    }),
+    cache({
+      ttl: 300000, // 5 minutes
+    }),
+  ],
+});
+```
+
+**Execution order**: Plugins run in the order they're provided. With the above configuration:
+1. Cache plugin checks cache first
+2. If cache miss or stale, retry plugin handles the request with retry logic
+3. Successful responses are cached by the cache plugin
+
+## Real-World Examples
+
+### E-commerce API with Rate Limiting
+
+```typescript
+import { createApiClient, get, post } from 'endpoint-fetcher';
+import { retryPlugin } from '@endpoint-fetcher/retry';
+
+const ecommerceApi = createApiClient({
+  getProduct: get<{ id: string }, Product>((input) => `/products/${input.id}`),
+  createOrder: post<OrderInput, Order>('/orders'),
+}, {
+  baseUrl: 'https://api.ecommerce.com',
+  plugins: [
+    retryPlugin({
+      maxRetries: 5,
+      strategy: 'exponential',
+      baseDelay: 2000, // Start with 2 seconds
+      maxDelay: 30000, // Max 30 seconds
+      onRetry: (error, attempt, delay) => {
+        if ((error as any).status === 429) {
+          console.warn(`Rate limited. Waiting ${delay}ms before attempt ${attempt}`);
+        }
+      },
+    }),
+  ],
+});
+```
+
+### Microservices with Circuit Breaker Pattern
+
+```typescript
+import { retryPlugin } from '@endpoint-fetcher/retry';
+
+let consecutiveFailures = 0;
+const MAX_CONSECUTIVE_FAILURES = 10;
+
+const api = createApiClient({
+  // ... endpoints
+}, {
+  baseUrl: 'https://microservice.example.com',
+  plugins: [
+    retryPlugin({
+      maxRetries: 2,
+      baseDelay: 100,
+      shouldRetry: (error, attempt) => {
+        const err = error as { status?: number };
+        
+        // Circuit breaker: if too many consecutive failures, stop retrying
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          console.error('Circuit breaker open - not retrying');
+          return false;
+        }
+        
+        // Only retry server errors
+        return !err.status || err.status >= 500;
+      },
+      onRetry: (error, attempt, delay) => {
+        consecutiveFailures++;
+        console.log(`Service failure ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}`);
+      },
+    }),
+  ],
+});
+
+// Reset circuit breaker on successful requests
+api.hooks.afterResponse.push(() => {
+  consecutiveFailures = 0;
+});
+```
+
+## Troubleshooting
+
+### Requests are never retried
+
+- **Check status codes**: By default, only 5xx and 429 status codes trigger retries. Use `retryStatusCodes` to add more.
+- **Check HTTP methods**: Verify the request method is in `retryMethods` (default includes all common methods).
+- **Check custom conditions**: If using `shouldRetry`, ensure it returns `true` for the errors you want to retry.
+- **Check maxRetries**: Ensure `maxRetries` is greater than 0.
+
+### Too many retries causing performance issues
+
+- **Reduce maxRetries**: Lower the `maxRetries` value (default is 3).
+- **Increase baseDelay**: Use longer delays between retries.
+- **Use exponential strategy**: Exponential backoff grows quickly, reducing retry frequency.
+- **Set maxDelay**: Use `maxDelay` to cap the maximum wait time.
+
+### Retries happening for client errors
+
+- **Review retryStatusCodes**: Remove 4xx status codes (except 429) from `retryStatusCodes`.
+- **Implement shouldRetry**: Use a custom `shouldRetry` function to exclude client errors.
+- **Check default behavior**: The default configuration does NOT retry 4xx errors (except 429).
+
+### Network errors not being retried
+
+- **Network errors are retried by default**: The plugin should automatically retry errors without status codes.
+- **Check error structure**: Ensure network errors are thrown as Error objects or similar.
+- **Custom shouldRetry**: If using custom `shouldRetry`, ensure it handles errors without `status` property.
+
+## API Reference
+
+### retryPlugin(config: RetryPluginConfig): Plugin
+
+The main export function that creates a retry plugin instance.
+
+```typescript
+interface RetryPluginConfig {
+  maxRetries?: number;
+  baseDelay?: number;
+  maxDelay?: number;
+  strategy?: 'fixed' | 'linear' | 'exponential';
+  shouldRetry?: (error: unknown, attempt: number) => boolean;
+  onRetry?: (error: unknown, attempt: number, delay: number) => void;
+  retryStatusCodes?: number[];
+  retryMethods?: string[];
+}
+```
+
+### Default Configuration
+
+```typescript
+const defaultConfig: RetryPluginConfig = {
+  maxRetries: 3,
+  baseDelay: 1000,
+  maxDelay: 30000,
+  strategy: 'exponential',
+  shouldRetry: defaultShouldRetry,
+  onRetry: () => {},
+  retryStatusCodes: [500, 502, 503, 504, 429],
+  retryMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+};
+```

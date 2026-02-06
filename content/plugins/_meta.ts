@@ -4,4 +4,5 @@ export default {
         title: 'Official Plugins',
     },
     cache_plugin: "Cache Plugin",
+    retry_plugin: "Retry Plugin",
 }
