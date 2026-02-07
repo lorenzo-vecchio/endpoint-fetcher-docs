@@ -38,4 +38,3 @@ export default {
         }
     },
 }
-// TODO: make advanced examples into a group with multiple sub pages
