@@ -8,6 +8,7 @@ Plugins are modular extensions that add functionality to your API client. They c
 
 - Add hooks (authentication, logging, error tracking)
 - Wrap handlers (caching, retries, rate limiting)
+- Expose custom methods accessible via `client.plugins`
 - Modify requests and responses globally
 - Integrate with external services
 
@@ -125,6 +126,14 @@ export const myPlugin = createPlugin((config: { option: string }) => ({
 }));
 ```
 
+A `PluginOptions` object can include any combination of these properties:
+
+| Property | Description |
+| --- | --- |
+| `hooks` | Lifecycle hooks (`beforeRequest`, `afterResponse`, `onError`) applied globally |
+| `handlerWrapper` | A function that wraps each endpoint's handler, useful for caching, retries, etc. |
+| `methods` | An object of functions exposed on `client.plugins`, allowing the plugin to provide an API to the consumer |
+
 ### Simple Plugin with Hooks
 
 Create a logging plugin:
@@ -175,7 +184,7 @@ export const authPlugin = createPlugin((config: AuthConfig) => ({
     beforeRequest: async (url, init) => {
       const headerName = config.header || 'Authorization';
       const headerValue = config.header ? config.token : `Bearer ${config.token}`;
-      
+
       return {
         url,
         init: {
@@ -222,19 +231,19 @@ export const retryPlugin = createPlugin((config: RetryConfig) => ({
     return async (input, context) => {
       let lastError;
       const delay = config.delay || 1000;
-      
+
       for (let i = 0; i <= config.maxRetries; i++) {
         try {
           return await originalHandler(input, context);
         } catch (error) {
           lastError = error;
-          
+
           // Don't retry on client errors (4xx)
           const err = error as { status?: number };
           if (err.status && err.status >= 400 && err.status < 500) {
             throw error;
           }
-          
+
           if (i < config.maxRetries) {
             console.log(`Retry ${i + 1}/${config.maxRetries}...`);
             await new Promise(resolve =>
@@ -243,7 +252,7 @@ export const retryPlugin = createPlugin((config: RetryConfig) => ({
           }
         }
       }
-      
+
       throw lastError;
     };
   },
@@ -264,6 +273,98 @@ const api = createApiClient({
 });
 ```
 
+### Plugin with Methods
+
+Plugins can expose custom methods that become accessible on `client.plugins`. This is useful when a plugin needs to provide an API beyond request interception — for example, to let consumers query internal state, reset caches, or interact with a service the plugin manages.
+
+Methods are fully type-safe: TypeScript infers them from the plugin definition, so `client.plugins` is correctly typed with all methods from every registered plugin.
+
+```typescript
+import { createPlugin } from 'endpoint-fetcher';
+
+type MetricsData = {
+  totalRequests: number;
+  failedRequests: number;
+  avgResponseTime: number;
+};
+
+export const metricsPlugin = createPlugin(() => {
+  let totalRequests = 0;
+  let failedRequests = 0;
+  let totalTime = 0;
+
+  return {
+    hooks: {
+      beforeRequest: async (url, init) => {
+        totalRequests++;
+        return { url, init };
+      },
+      onError: async () => {
+        failedRequests++;
+      },
+    },
+    methods: {
+      getMetrics: (): MetricsData => ({
+        totalRequests,
+        failedRequests,
+        avgResponseTime: totalRequests > 0 ? totalTime / totalRequests : 0,
+      }),
+      resetMetrics: () => {
+        totalRequests = 0;
+        failedRequests = 0;
+        totalTime = 0;
+      },
+    },
+  };
+});
+```
+
+When you register this plugin, its methods are available on `client.plugins`:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [metricsPlugin()],
+});
+
+// Make some requests...
+await api.users.list();
+
+// Access plugin methods (fully typed)
+const metrics = api.plugins.getMetrics();
+console.log(metrics.totalRequests); // 1
+
+api.plugins.resetMetrics();
+```
+
+When multiple plugins expose methods, they all merge into a single `client.plugins` object:
+
+```typescript
+const api = createApiClient({
+  users: group({
+    endpoints: {
+      list: get<void, User[]>('/users'),
+    }
+  }),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    metricsPlugin(),
+    cache({ ttl: 300 }),
+  ],
+});
+
+// Methods from all plugins are available
+api.plugins.getMetrics();
+api.plugins.resetMetrics();
+```
+
 ### Plugin with Both Hooks and Handler Wrapper
 
 Create a performance monitoring plugin:
@@ -277,7 +378,7 @@ type PerformanceConfig = {
 
 export const performancePlugin = createPlugin((config: PerformanceConfig) => {
   const timings = new Map<string, number>();
-  
+
   return {
     hooks: {
       beforeRequest: async (url, init) => {
@@ -288,29 +389,29 @@ export const performancePlugin = createPlugin((config: PerformanceConfig) => {
       afterResponse: async (response, url, init) => {
         const key = `${init.method}:${url}`;
         const start = timings.get(key);
-        
+
         if (start) {
           const duration = Date.now() - start;
           timings.delete(key);
-          
+
           if (duration > config.slowThreshold) {
             console.warn(`Slow request: ${key} took ${duration}ms`);
           }
         }
-        
+
         return response;
       },
     },
     handlerWrapper: (originalHandler) => {
       return async (input, context) => {
         const start = performance.now();
-        
+
         try {
           const result = await originalHandler(input, context);
           const duration = performance.now() - start;
-          
+
           console.log(`${context.method} ${context.path}: ${duration.toFixed(2)}ms`);
-          
+
           return result;
         } catch (error) {
           const duration = performance.now() - start;
@@ -353,19 +454,19 @@ type RateLimitConfig = {
 export const rateLimitPlugin = createPlugin((config: RateLimitConfig) => {
   let lastRequest = 0;
   const minInterval = 1000 / config.requestsPerSecond;
-  
+
   return {
     hooks: {
       beforeRequest: async (url, init) => {
         const now = Date.now();
         const timeSinceLastRequest = now - lastRequest;
-        
+
         if (timeSinceLastRequest < minInterval) {
           await new Promise(resolve =>
             setTimeout(resolve, minInterval - timeSinceLastRequest)
           );
         }
-        
+
         lastRequest = Date.now();
         return { url, init };
       },
@@ -391,7 +492,7 @@ export const errorTrackingPlugin = createPlugin((config: ErrorTrackingConfig) =>
     onError: async (error) => {
       // Send to tracking service
       console.error('Tracking error:', error);
-      
+
       // Example: Send to Sentry
       // if (config.service === 'sentry') {
       //   Sentry.captureException(error);
@@ -461,20 +562,23 @@ const api = createApiClient({
 
 1. **Keep plugins focused** - Each plugin should do one thing well
 2. **Make plugins configurable** - Accept options for flexibility
-3. **Use TypeScript** - Provide proper types for plugin configuration
+3. **Use TypeScript** - Provide proper types for plugin configuration and methods
 4. **Document your plugins** - Explain what they do and how to configure them
 5. **Test plugins** - Write tests for plugin behavior
 6. **Consider plugin order** - Order matters for execution
 7. **Handle errors gracefully** - Don't let plugin errors crash the app
+8. **Use `methods` for stateful plugins** - Expose internal state through typed methods instead of side channels
 
 ## Official Plugins
 
-- [Cache Plugin](/plugins/cache) - Response caching with TTL and storage adapters
+- [Cache Plugin](/plugins/cache_plugin) - Response caching with TTL and storage adapters
+- [Retry Plugin](/plugins/retry_plugin) - Automatic retries with configurable strategies
 
 ## Next Steps
 
 Explore plugins further:
 
 - [Cache Plugin](/plugins/cache_plugin) - Learn about response caching
+- [Retry Plugin](/plugins/retry_plugin) - Learn about retry strategies
 - [Custom Handlers](/custom_handlers) - Combine with custom handlers
 - [Advanced Examples](/advanced_examples) - See complex plugin compositions
