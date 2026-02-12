@@ -8,7 +8,7 @@ Plugins are modular extensions that add functionality to your API client. They c
 
 - Add hooks (authentication, logging, error tracking)
 - Wrap handlers (caching, retries, rate limiting)
-- Expose custom methods accessible via `client.plugins`
+- Expose custom methods accessible via `client.plugins.<pluginName>`
 - Modify requests and responses globally
 - Integrate with external services
 
@@ -98,12 +98,12 @@ const api = createApiClient({
 
 ### Plugin Structure
 
-A plugin is a function that returns a `PluginOptions` object:
+A plugin is created using the `createPlugin` helper, which requires a unique name and returns a `PluginOptions` object:
 
 ```typescript
 import { createPlugin } from 'endpoint-fetcher';
 
-export const myPlugin = createPlugin((config: { option: string }) => ({
+export const myPlugin = createPlugin('myPlugin', (config: { option: string }) => ({
   hooks: {
     beforeRequest: async (url, init) => {
       // Modify request
@@ -123,6 +123,11 @@ export const myPlugin = createPlugin((config: { option: string }) => ({
       return originalHandler(input, context);
     };
   },
+  methods: {
+    customMethod: () => {
+      // Plugin-specific functionality
+    }
+  }
 }));
 ```
 
@@ -130,9 +135,12 @@ A `PluginOptions` object can include any combination of these properties:
 
 | Property | Description |
 | --- | --- |
+| `name` | **Required** - Unique identifier for the plugin (used to namespace methods on `client.plugins`) |
 | `hooks` | Lifecycle hooks (`beforeRequest`, `afterResponse`, `onError`) applied globally |
 | `handlerWrapper` | A function that wraps each endpoint's handler, useful for caching, retries, etc. |
-| `methods` | An object of functions exposed on `client.plugins`, allowing the plugin to provide an API to the consumer |
+| `methods` | An object of functions exposed on `client.plugins.<pluginName>`, allowing the plugin to provide an API to the consumer |
+
+**Important:** Each plugin must have a unique name. If two plugins share the same name, an error will be thrown at client creation time.
 
 ### Simple Plugin with Hooks
 
@@ -141,7 +149,7 @@ Create a logging plugin:
 ```typescript
 import { createPlugin } from 'endpoint-fetcher';
 
-export const loggingPlugin = createPlugin(() => ({
+export const loggingPlugin = createPlugin('logging', () => ({
   hooks: {
     beforeRequest: async (url, init) => {
       console.log(`→ ${init.method} ${url}`);
@@ -179,7 +187,7 @@ type AuthConfig = {
   header?: string;
 };
 
-export const authPlugin = createPlugin((config: AuthConfig) => ({
+export const authPlugin = createPlugin('auth', (config: AuthConfig) => ({
   hooks: {
     beforeRequest: async (url, init) => {
       const headerName = config.header || 'Authorization';
@@ -226,7 +234,7 @@ type RetryConfig = {
   delay?: number;
 };
 
-export const retryPlugin = createPlugin((config: RetryConfig) => ({
+export const retryPlugin = createPlugin('retry', (config: RetryConfig) => ({
   handlerWrapper: (originalHandler) => {
     return async (input, context) => {
       let lastError;
@@ -275,9 +283,9 @@ const api = createApiClient({
 
 ### Plugin with Methods
 
-Plugins can expose custom methods that become accessible on `client.plugins`. This is useful when a plugin needs to provide an API beyond request interception — for example, to let consumers query internal state, reset caches, or interact with a service the plugin manages.
+Plugins can expose custom methods that become accessible on `client.plugins.<pluginName>`. This is useful when a plugin needs to provide an API beyond request interception — for example, to let consumers query internal state, reset caches, or interact with a service the plugin manages.
 
-Methods are fully type-safe: TypeScript infers them from the plugin definition, so `client.plugins` is correctly typed with all methods from every registered plugin.
+Methods are fully type-safe: TypeScript infers them from the plugin definition, so `client.plugins.<pluginName>` is correctly typed with all methods from the plugin.
 
 ```typescript
 import { createPlugin } from 'endpoint-fetcher';
@@ -288,7 +296,7 @@ type MetricsData = {
   avgResponseTime: number;
 };
 
-export const metricsPlugin = createPlugin(() => {
+export const metricsPlugin = createPlugin('metrics', () => {
   let totalRequests = 0;
   let failedRequests = 0;
   let totalTime = 0;
@@ -319,7 +327,7 @@ export const metricsPlugin = createPlugin(() => {
 });
 ```
 
-When you register this plugin, its methods are available on `client.plugins`:
+When you register this plugin, its methods are available on `client.plugins.<pluginName>`:
 
 ```typescript
 const api = createApiClient({
@@ -337,13 +345,13 @@ const api = createApiClient({
 await api.users.list();
 
 // Access plugin methods (fully typed)
-const metrics = api.plugins.getMetrics();
+const metrics = api.plugins.metrics.getMetrics();
 console.log(metrics.totalRequests); // 1
 
-api.plugins.resetMetrics();
+api.plugins.metrics.resetMetrics();
 ```
 
-When multiple plugins expose methods, they all merge into a single `client.plugins` object:
+When multiple plugins expose methods, each plugin's methods are namespaced under its plugin name:
 
 ```typescript
 const api = createApiClient({
@@ -360,10 +368,13 @@ const api = createApiClient({
   ],
 });
 
-// Methods from all plugins are available
-api.plugins.getMetrics();
-api.plugins.resetMetrics();
+// Methods from all plugins are available, namespaced by plugin name
+api.plugins.metrics.getMetrics();
+api.plugins.metrics.resetMetrics();
+api.plugins.cache.clearCache(); // If cache plugin has this method
 ```
+
+**Important:** Plugin names must be unique. If you try to register multiple plugins with the same name, the client will throw an error during creation.
 
 ### Plugin with Both Hooks and Handler Wrapper
 
@@ -376,7 +387,7 @@ type PerformanceConfig = {
   slowThreshold: number; // milliseconds
 };
 
-export const performancePlugin = createPlugin((config: PerformanceConfig) => {
+export const performancePlugin = createPlugin('performance', (config: PerformanceConfig) => {
   const timings = new Map<string, number>();
 
   return {
@@ -451,7 +462,7 @@ type RateLimitConfig = {
   requestsPerSecond: number;
 };
 
-export const rateLimitPlugin = createPlugin((config: RateLimitConfig) => {
+export const rateLimitPlugin = createPlugin('rateLimit', (config: RateLimitConfig) => {
   let lastRequest = 0;
   const minInterval = 1000 / config.requestsPerSecond;
 
@@ -487,7 +498,7 @@ type ErrorTrackingConfig = {
   apiKey: string;
 };
 
-export const errorTrackingPlugin = createPlugin((config: ErrorTrackingConfig) => ({
+export const errorTrackingPlugin = createPlugin('errorTracking', (config: ErrorTrackingConfig) => ({
   hooks: {
     onError: async (error) => {
       // Send to tracking service
@@ -509,7 +520,7 @@ Add unique request IDs:
 ```typescript
 import { createPlugin } from 'endpoint-fetcher';
 
-export const requestIdPlugin = createPlugin(() => ({
+export const requestIdPlugin = createPlugin('requestId', () => ({
   hooks: {
     beforeRequest: async (url, init) => {
       return {
@@ -567,7 +578,9 @@ const api = createApiClient({
 5. **Test plugins** - Write tests for plugin behavior
 6. **Consider plugin order** - Order matters for execution
 7. **Handle errors gracefully** - Don't let plugin errors crash the app
-8. **Use `methods` for stateful plugins** - Expose internal state through typed methods instead of side channels
+8. **Use unique plugin names** - Each plugin must have a unique name to avoid conflicts
+9. **Use `methods` for stateful plugins** - Expose internal state through typed methods instead of side channels
+10. **Namespace your methods** - Plugin methods are automatically namespaced under the plugin name, preventing conflicts
 
 ## Official Plugins
 
