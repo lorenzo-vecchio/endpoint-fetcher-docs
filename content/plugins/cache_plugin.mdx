@@ -18,7 +18,7 @@ The official caching plugin for `endpoint-fetcher`. It provides intelligent, typ
 npm install @endpoint-fetcher/cache
 ```
 
-> **Note:** Requires `endpoint-fetcher` v2.0.0 or higher.
+> **Note:** Requires `endpoint-fetcher` v3.0.0 or higher.
 
 ## Quick Start
 
@@ -36,7 +36,7 @@ const api = createApiClient({
     }
   }
 }, {
-  baseUrl: '[https://api.example.com](https://api.example.com)',
+  baseUrl: 'https://api.example.com',
   plugins: [
     cache({ ttl: 300 }) // Global TTL: 5 minutes
   ]
@@ -119,14 +119,56 @@ const api = createApiClient({...}, {
 
 ## Cache Management
 
-### Global Clear
-To clear all cached data (e.g., on logout), use the `clearCache` utility.
+### Global Cache Methods
+
+The cache plugin exposes methods on `client.plugins.cache` for managing the entire cache:
 
 ```typescript
-import { clearCache } from '@endpoint-fetcher/cache';
+import { createApiClient, get } from 'endpoint-fetcher';
+import { cache, CachingWrapper } from '@endpoint-fetcher/cache';
 
-// Wipes the entire cache storage
-clearCache();
+const api = createApiClient({
+  users: {
+    endpoints: {
+      getAll: get<void, CachingWrapper<User[]>>('/users'),
+      getById: get<{ id: string }, CachingWrapper<User>>((input) => `/users/${input.id}`),
+    }
+  }
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [cache({ ttl: 300 })]
+});
+
+// Clear the entire cache
+api.plugins.cache.clear();
+
+// Invalidate a specific endpoint's cache
+api.plugins.cache.invalidate('GET', '/users', undefined);
+
+// Invalidate using a specific cache key
+api.plugins.cache.invalidateKey('GET:/users/123:{"id":"123"}');
+```
+
+#### Available Methods
+
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| **`clear()`** | `() => void` | Clears all cache entries. |
+| **`invalidate(method, path, input)`** | `(method: string, path: string, input: any) => void` | Invalidates cache for a specific endpoint with given parameters. |
+| **`invalidateKey(key)`** | `(key: string) => void` | Invalidates cache using a specific cache key string. |
+
+### Per-Entry Cache Management
+
+Each cached response also includes methods for managing its own cache entry:
+
+```typescript
+const result = await api.users.getAll();
+
+// Force a network refresh for this specific endpoint
+const fresh = await result.refresh();
+
+// Remove only this entry from cache
+result.invalidate();
 ```
 
 ### Stale-While-Revalidate Pattern
@@ -145,6 +187,46 @@ if (result.isStale) {
 }
 ```
 
+### Common Cache Management Scenarios
+
+#### Clear cache on logout
+
+```typescript
+function logout() {
+  // Clear user data
+  api.plugins.cache.clear();
+  
+  // Redirect to login
+  window.location.href = '/login';
+}
+```
+
+#### Invalidate specific user data after update
+
+```typescript
+async function updateUser(userId: string, data: Partial<User>) {
+  // Update the user
+  await api.users.update({ id: userId, ...data });
+  
+  // Invalidate the cached user data
+  api.plugins.cache.invalidate('GET', `/users/${userId}`, { id: userId });
+  
+  // Or invalidate the entire user list
+  api.plugins.cache.invalidate('GET', '/users', undefined);
+}
+```
+
+#### Selective cache invalidation
+
+```typescript
+// Clear only specific endpoints while keeping others
+api.plugins.cache.invalidate('GET', '/users', undefined);     // Clear users list
+api.plugins.cache.invalidate('GET', '/posts', undefined);     // Clear posts list
+
+// But keep other cached data intact
+// (e.g., /settings, /profile, etc.)
+```
+
 ---
 
 ## Troubleshooting
@@ -155,3 +237,12 @@ if (result.isStale) {
 
 ### Cache persists after refresh
 * The default storage is in-memory. If you are using a custom `localStorage` adapter, the cache will persist across page reloads unless `ttl` is reached or `invalidate()` is called.
+
+### How to invalidate cache programmatically
+* Use `api.plugins.cache.clear()` to clear all cache entries
+* Use `api.plugins.cache.invalidate(method, path, input)` to clear specific endpoints
+* Use `result.invalidate()` on individual responses to clear just that entry
+
+### Cache not being cleared
+* Make sure you're calling the methods on the correct plugin instance: `api.plugins.cache.clear()`
+* If using custom storage, ensure your storage adapter's `clear()` and `delete()` methods are working correctly
