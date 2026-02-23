@@ -33,6 +33,7 @@ export default async function RootLayout({ children }) {
       // ... Your additional head options
       >
         {/* Your additional tags should be passed as `children` of `<Head>` element */}
+       <script defer src="https://analytics.lorenzovecchio.dev/script.js" data-website-id="aca6d596-476c-4a36-9879-6a998456ba29"></script>
       </Head>
       <body>
         <Layout
