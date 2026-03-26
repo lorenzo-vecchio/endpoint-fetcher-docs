@@ -2,11 +2,9 @@ import { Tabs } from 'nextra/components'
 
 # Getting Started
 
-Welcome to **endpoint-fetcher** - a lightweight, type-safe API client builder for TypeScript that makes working with REST APIs a breeze.
+**endpoint-fetcher** is a lightweight, type-safe API client builder for TypeScript built on the Fetch API.
 
 ## Installation
-
-Install endpoint-fetcher using your preferred package manager:
 
 ```bash npm2yarn
 npm install endpoint-fetcher
@@ -14,193 +12,40 @@ npm install endpoint-fetcher
 
 ## Quick Start
 
-Here's a minimal example to get you up and running in seconds:
-
 ```typescript
-import { createApiClient, get } from 'endpoint-fetcher';
+import { createApiClient, get, post, del } from 'endpoint-fetcher';
 
-type User = {
-  id: string;
-  name: string;
-  email: string;
-};
+type User = { id: string; name: string; email: string };
+type CreateUserInput = { name: string; email: string };
 
 const api = createApiClient({
-  user: get<{ id: string }, User>((input) => `/users/${input.id}`),
-}, {
-  baseUrl: 'https://api.example.com',
-});
-
-// Fully type-safe call
-const user = await api.user({ id: '123' });
-console.log(user.name); // ✅ TypeScript knows this is a string
-```
-
-That's it! You now have a type-safe API client with:
-- ✅ Full TypeScript autocomplete
-- ✅ Compile-time type checking
-- ✅ Runtime error handling
-- ✅ Zero configuration needed
-
-## What You Get Out of the Box
-
-endpoint-fetcher provides:
-
-### 🔒 Complete Type Safety
-Not just for inputs and outputs - **document expected error structures** with the third generic parameter.
-
-```typescript
-type ApiError = { message: string; code: string };
-
-const api = createApiClient({
-  user: get<{ id: string }, User, ApiError>((input) => `/users/${input.id}`),
-});
-
-try {
-  const user = await api.user({ id: '123' });
-} catch (err: unknown) {
-  // TypeScript doesn't enforce types in catch blocks
-  // Assert the type to get autocomplete and type safety
-  const apiError = err as { status: number; statusText: string; error: ApiError };
-  
-  console.log(apiError.error.code);    // ✅ TypeScript autocomplete works
-  console.log(apiError.error.message); // ✅ Type-safe access
-}
-```
-
-### 🎯 Smart Helper Functions
-Use intuitive helpers instead of manual configuration:
-
-```typescript
-import { get, post, put, patch, del } from 'endpoint-fetcher';
-
-const api = createApiClient({
-  getUser: get<{ id: string }, User>((input) => `/users/${input.id}`),
+  listUsers:  get<void, User[]>('/users'),
+  getUser:    get<{ id: string }, User>((input) => `/users/${input.id}`),
   createUser: post<CreateUserInput, User>('/users'),
-  updateUser: patch<UpdateUserInput, User>((input) => `/users/${input.id}`),
   deleteUser: del<{ id: string }, void>((input) => `/users/${input.id}`),
-});
-```
-
-### 🪝 Hierarchical Hooks
-Add authentication, logging, or error handling at any level:
-
-```typescript
-const api = createApiClient({
-  // ... endpoints
 }, {
   baseUrl: 'https://api.example.com',
-  hooks: {
-    beforeRequest: async (request) => {
-      request.headers.set('Authorization', `Bearer ${getToken()}`);
-    },
-  },
-});
-```
-
-### 📦 Plugin System
-Extend functionality with plugins like caching, retries, and more:
-
-```typescript
-import { createApiClient } from 'endpoint-fetcher';
-import { cachePlugin } from '@endpoint-fetcher/cache';
-
-const api = createApiClient({
-  // ... endpoints
-}, {
-  baseUrl: 'https://api.example.com',
-  plugins: [cachePlugin({ ttl: 60000 })],
-});
-```
-
-### 🗂️ Organized with Groups
-Keep large APIs organized with nested groups:
-
-```typescript
-import { group, get } from 'endpoint-fetcher';
-
-const api = createApiClient({
-  users: group({
-    get: get<{ id: string }, User>((input) => `/users/${input.id}`),
-    posts: group({
-      list: get<{ userId: string }, Post[]>((input) => `/users/${input.userId}/posts`),
-    }),
-  }),
 });
 
-// Access with dot notation
-const user = await api.users.get({ id: '123' });
-const posts = await api.users.posts.list({ userId: '123' });
+const users = await api.listUsers();
+const user  = await api.getUser({ id: '123' });
+const newUser = await api.createUser({ name: 'Jane', email: 'jane@example.com' });
 ```
 
-## Core Concepts
+Every call is fully typed — TypeScript infers inputs, outputs, and errors.
 
-### What is endpoint-fetcher?
+## What endpoint-fetcher provides
 
-endpoint-fetcher is a thin wrapper around the Fetch API that adds:
-1. **Type safety** - Full TypeScript support for requests, responses, and errors
-2. **Developer experience** - Helper functions and intuitive API design
-3. **Extensibility** - Hooks and plugins for custom behavior
-4. **Organization** - Groups for structuring large APIs
-
-### Type Safety for Everything
-
-Unlike other libraries, endpoint-fetcher provides type safety for:
-- ✅ Request inputs
-- ✅ Response outputs  
-- ✅ Error response documentation (via third generic parameter)
-- ✅ Hook parameters
-- ✅ Plugin configurations
-
-The `TError` generic parameter documents your expected error structure:
-
-```typescript
-type ValidationError = {
-  message: string;
-  code: string;
-  errors: Array<{ field: string; message: string }>;
-};
-
-const api = createApiClient({
-  createUser: post<CreateUserInput, User, ValidationError>('/users'),
-});
-
-try {
-  await api.createUser({ name: 'John' });
-} catch (err: unknown) {
-  // Assert the error type to access typed properties
-  const error = err as { status: number; statusText: string; error: ValidationError };
-  
-  console.log(error.error.code); // ✅ TypeScript autocomplete works
-  error.error.errors.forEach(e => {
-    console.log(`${e.field}: ${e.message}`);
-  });
-}
-```
-
-**Note:** TypeScript doesn't enforce types in `catch` blocks, so you'll need to use type assertions. The `TError` parameter serves as documentation and enables autocomplete after assertion.
-
-### When to Use endpoint-fetcher vs Native Fetch
-
-**Use endpoint-fetcher when:**
-- You want type safety across your entire API layer
-- You need organized, maintainable API clients
-- You want features like caching, retries, or interceptors
-- You're building a medium-to-large application
-
-**Use native fetch when:**
-- Making one-off requests
-- Building a tiny script or prototype
-- You need the absolute smallest bundle size
+- **Type safety** — Full TypeScript inference for inputs, outputs, and error shapes
+- **HTTP helpers** — `get`, `post`, `put`, `patch`, `del` for defining endpoints
+- **Groups** — Organize endpoints hierarchically with shared hooks and base paths
+- **Hooks** — Intercept requests/responses globally, per group, or per endpoint
+- **Plugins** — Extend with caching, retries, and custom logic via official plugins
+- **Custom handlers** — Override the default JSON behavior for files, streaming, etc.
 
 ## Next Steps
 
-Now that you understand the basics, explore:
-
-- [Basic Usage](/basic_usage) - Learn how to define and call endpoints
-- [Groups & Organization](/groups) - Structure large APIs
-- [Hooks](/hooks) - Add global behaviors like auth and logging
-- [Plugins](/plugins) - Extend with caching and more
-- [Error Handling](/error_handling) - Type-safe error management
-
-Ready to build your first real API client? Let's dive into [Basic Usage](/basic_usage)!
+- [Basic Usage](/basic_usage) — Define endpoints, call them, handle responses
+- [Groups](/groups) — Organize large APIs with nested groups and base paths
+- [Hooks](/hooks) — Add auth, logging, and error handling
+- [Plugins](/plugins) — Official cache and retry plugins

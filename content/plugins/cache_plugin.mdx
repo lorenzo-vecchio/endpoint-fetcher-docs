@@ -2,14 +2,10 @@ import { Callout } from 'nextra/components'
 
 # Cache Plugin
 
-The official caching plugin for `endpoint-fetcher`. It provides intelligent, type-safe caching with support for TTL, LRU (Least Recently Used) eviction, and custom storage adapters.
+The official caching plugin for `endpoint-fetcher`. Provides TTL-based caching with LRU eviction and custom storage support.
 
 <Callout type="info">
-  Check out the code on [GitHub](https://github.com/lorenzo-vecchio/endpoint-fetcher-cache)
-</Callout>
-
-<Callout type="info">
-  Check out the package on [NPM](https://www.npmjs.com/package/@endpoint-fetcher/cache)
+  [GitHub](https://github.com/lorenzo-vecchio/endpoint-fetcher-cache) · [NPM](https://www.npmjs.com/package/@endpoint-fetcher/cache)
 </Callout>
 
 ## Installation
@@ -18,231 +14,106 @@ The official caching plugin for `endpoint-fetcher`. It provides intelligent, typ
 npm install @endpoint-fetcher/cache
 ```
 
-> **Note:** Requires `endpoint-fetcher` v3.0.0 or higher.
+> Requires `endpoint-fetcher` v3.0.0 or higher.
 
 ## Quick Start
 
-Add the `cache` plugin to your client and wrap your endpoint return types with `CachingWrapper<T>` to enable metadata and helper methods.
+Wrap endpoint return types with `CachingWrapper<T>` to enable cache metadata and control methods:
 
 ```typescript
 import { createApiClient, get } from 'endpoint-fetcher';
 import { cache, CachingWrapper } from '@endpoint-fetcher/cache';
 
 const api = createApiClient({
-  users: {
-    endpoints: {
-      // 1. Wrap the return type with CachingWrapper<T>
-      getAll: get<void, CachingWrapper<User[]>>('/users'),
-    }
-  }
+  getAll: get<void, CachingWrapper<User[]>>('/users'),
 }, {
   baseUrl: 'https://api.example.com',
-  plugins: [
-    cache({ ttl: 300 }) // Global TTL: 5 minutes
-  ]
+  plugins: [cache({ ttl: 300 })],
 });
 
-// Usage
-const result = await api.users.getAll();
+const result = await api.getAll();
 
 console.log(result.data);      // User[]
-console.log(result.isStale);   // false
-console.log(result.expiresAt); // Date object
+console.log(result.isStale);   // boolean
+console.log(result.expiresAt); // Date
 ```
 
----
+## `CachingWrapper<T>`
 
-## CachingWrapper&lt;T&gt;
+Every cached response includes:
 
-When an endpoint is cached, the response object includes the following properties and methods to help you manage the data lifecycle.
-
-### Properties
-
-| Property | Type | Description |
-| :--- | :--- | :--- |
-| **`data`** | `T` | The actual API response data. |
-| **`cachedAt`** | `Date` | Timestamp of the original network fetch. |
-| **`expiresAt`** | `Date` | When the entry will be considered stale. |
-| **`isStale`** | `boolean` | Helper to check if the current time has passed the TTL. |
-
-### Methods
-
-* **`refresh()`**: Forces a network re-fetch, updates the cache, and returns the new data.
-* **`invalidate()`**: Immediately removes this specific entry from the cache.
+| Member | Type | Description |
+|--------|------|-------------|
+| `data` | `T` | The actual API response data |
+| `cachedAt` | `Date` | When the original fetch happened |
+| `expiresAt` | `Date` | When the entry expires |
+| `isStale` | `boolean` | Whether the current time has passed the TTL |
+| `refresh()` | `() => Promise<CachingWrapper<T>>` | Force a network re-fetch and update the cache |
+| `invalidate()` | `() => void` | Remove this entry from the cache |
 
 ```typescript
-const result = await api.users.getAll();
+const result = await api.getAll();
 
-// Force a network refresh
+// Force a fresh fetch
 const fresh = await result.refresh();
 
-// Remove this specific entry from cache
-result.invalidate();
-```
-
----
-
-## Configuration
-
-The `cache(config)` function accepts the following options:
-
-| Option | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `ttl` | `number` | `300` | Global time-to-live in seconds. |
-| `maxSize` | `number` | `Infinity` | Max number of entries before LRU eviction. |
-| `methods` | `string[]` | `['GET']` | HTTP methods to cache. |
-| `storage` | `CacheStorage` | `Memory` | Custom storage implementation (e.g., localStorage). |
-| `keyGenerator`| `Function` | Default | Logic to generate unique cache keys. |
-
-### Custom Storage
-
-You can persist cache across sessions by providing a custom storage adapter.
-
-```typescript
-const api = createApiClient({...}, {
-  plugins: [
-    cache({
-      ttl: 3600,
-      storage: {
-        get: (key) => JSON.parse(localStorage.getItem(key) || 'null'),
-        set: (key, val) => localStorage.setItem(key, JSON.stringify(val)),
-        delete: (key) => localStorage.removeItem(key),
-        keys: () => Object.keys(localStorage),
-        clear: () => localStorage.clear()
-      }
-    })
-  ]
-});
-```
-
----
-
-## Cache Management
-
-### Global Cache Methods
-
-The cache plugin exposes methods on `client.plugins.cache` for managing the entire cache:
-
-```typescript
-import { createApiClient, get } from 'endpoint-fetcher';
-import { cache, CachingWrapper } from '@endpoint-fetcher/cache';
-
-const api = createApiClient({
-  users: {
-    endpoints: {
-      getAll: get<void, CachingWrapper<User[]>>('/users'),
-      getById: get<{ id: string }, CachingWrapper<User>>((input) => `/users/${input.id}`),
-    }
-  }
-}, {
-  baseUrl: 'https://api.example.com',
-  plugins: [cache({ ttl: 300 })]
-});
-
-// Clear the entire cache
-api.plugins.cache.clear();
-
-// Invalidate a specific endpoint's cache
-api.plugins.cache.invalidate('GET', '/users', undefined);
-
-// Invalidate using a specific cache key
-api.plugins.cache.invalidateKey('GET:/users/123:{"id":"123"}');
-```
-
-#### Available Methods
-
-| Method | Signature | Description |
-| :--- | :--- | :--- |
-| **`clear()`** | `() => void` | Clears all cache entries. |
-| **`invalidate(method, path, input)`** | `(method: string, path: string, input: any) => void` | Invalidates cache for a specific endpoint with given parameters. |
-| **`invalidateKey(key)`** | `(key: string) => void` | Invalidates cache using a specific cache key string. |
-
-### Per-Entry Cache Management
-
-Each cached response also includes methods for managing its own cache entry:
-
-```typescript
-const result = await api.users.getAll();
-
-// Force a network refresh for this specific endpoint
-const fresh = await result.refresh();
-
-// Remove only this entry from cache
-result.invalidate();
-```
-
-### Stale-While-Revalidate Pattern
-
-Use the `isStale` flag to show cached data immediately while updating in the background.
-
-```typescript
-const result = await api.users.getAll();
-
-// Render cached data immediately
-render(result.data);
-
-// If stale, refresh in the background
+// Stale-while-revalidate pattern
 if (result.isStale) {
   result.refresh().then(fresh => render(fresh.data));
 }
+render(result.data);
 ```
 
-### Common Cache Management Scenarios
+## Configuration
 
-#### Clear cache on logout
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `ttl` | `number` | `300` | Time-to-live in **seconds** |
+| `maxSize` | `number` | `Infinity` | Max cache entries before LRU eviction |
+| `methods` | `string[]` | `['GET']` | HTTP methods to cache |
+| `storage` | `CacheStorage` | In-memory | Custom storage adapter |
+| `keyGenerator` | `Function` | Default | Custom cache key logic |
+
+### Custom Storage
+
+Persist cache across sessions with a custom storage adapter:
 
 ```typescript
-function logout() {
-  // Clear user data
-  api.plugins.cache.clear();
-  
-  // Redirect to login
-  window.location.href = '/login';
-}
+plugins: [
+  cache({
+    ttl: 3600,
+    storage: {
+      get:    (key) => JSON.parse(localStorage.getItem(key) || 'null'),
+      set:    (key, val) => localStorage.setItem(key, JSON.stringify(val)),
+      delete: (key) => localStorage.removeItem(key),
+      keys:   () => Object.keys(localStorage),
+      clear:  () => localStorage.clear(),
+    },
+  }),
+]
 ```
 
-#### Invalidate specific user data after update
+## Global Cache Management
+
+The cache plugin exposes methods on `client.plugins.cache`:
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `clear()` | `() => void` | Clear all cache entries |
+| `invalidate(method, path, input)` | `(string, string, any) => void` | Invalidate a specific endpoint |
+| `invalidateKey(key)` | `(string) => void` | Invalidate by raw cache key |
 
 ```typescript
-async function updateUser(userId: string, data: Partial<User>) {
-  // Update the user
-  await api.users.update({ id: userId, ...data });
-  
-  // Invalidate the cached user data
-  api.plugins.cache.invalidate('GET', `/users/${userId}`, { id: userId });
-  
-  // Or invalidate the entire user list
-  api.plugins.cache.invalidate('GET', '/users', undefined);
-}
+// Clear everything (e.g., on logout)
+api.plugins.cache.clear();
+
+// Invalidate a specific endpoint
+api.plugins.cache.invalidate('GET', '/users', undefined);
+api.plugins.cache.invalidate('GET', `/users/${userId}`, { id: userId });
 ```
-
-#### Selective cache invalidation
-
-```typescript
-// Clear only specific endpoints while keeping others
-api.plugins.cache.invalidate('GET', '/users', undefined);     // Clear users list
-api.plugins.cache.invalidate('GET', '/posts', undefined);     // Clear posts list
-
-// But keep other cached data intact
-// (e.g., /settings, /profile, etc.)
-```
-
----
 
 ## Troubleshooting
 
-### Data is never cached
-* **Check the Type**: Ensure you are using `CachingWrapper<T>`. If the return type is just `T`, the plugin will skip it.
-* **Check the Method**: By default, only `GET` requests are cached. Check your `methods` config if you need to cache `POST` requests.
+**Data is never cached** — Ensure the return type uses `CachingWrapper<T>`. If you use just `T`, the plugin skips caching. Also check that the HTTP method is in `methods` (default: `['GET']`).
 
-### Cache persists after refresh
-* The default storage is in-memory. If you are using a custom `localStorage` adapter, the cache will persist across page reloads unless `ttl` is reached or `invalidate()` is called.
-
-### How to invalidate cache programmatically
-* Use `api.plugins.cache.clear()` to clear all cache entries
-* Use `api.plugins.cache.invalidate(method, path, input)` to clear specific endpoints
-* Use `result.invalidate()` on individual responses to clear just that entry
-
-### Cache not being cleared
-* Make sure you're calling the methods on the correct plugin instance: `api.plugins.cache.clear()`
-* If using custom storage, ensure your storage adapter's `clear()` and `delete()` methods are working correctly
+**Cache persists after refresh** — The default storage is in-memory and clears on page load. If you use a `localStorage` adapter, data persists until TTL expires or you call `invalidate()` / `clear()`.
