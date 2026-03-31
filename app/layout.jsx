@@ -9,7 +9,7 @@ export const metadata = {
   // For more information on metadata API, see: https://nextjs.org/docs/app/building-your-application/optimizing/metadata
 }
  
-const banner = <Banner storageKey="banner-storage-key">✨ New: Plugin Support. Extend the core functionality with ease. <Link href="/plugins" style={{ textDecoration: 'underline' }}>Read more...</Link> 🎉</Banner>
+const banner = <Banner storageKey="auth-plugin-banner">✨ New: Auth Plugin. JWT, OAuth2, API Key, and more authentication strategies out of the box. <Link href="/plugins/auth_plugin" style={{ textDecoration: 'underline' }}>Read more...</Link> 🎉</Banner>
 const navbar = (
   <Navbar
     logo={<b>endpoint-fetcher</b>}

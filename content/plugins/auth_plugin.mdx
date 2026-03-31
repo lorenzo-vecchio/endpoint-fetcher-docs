@@ -1,0 +1,312 @@
+import { Callout } from 'nextra/components'
+
+# Auth Plugin
+
+The official authentication plugin for `endpoint-fetcher`. Attaches auth credentials to every request via a `strategy` field — no response-type changes, your endpoint return types stay clean.
+
+<Callout type="info">
+  [GitHub](https://github.com/lorenzo-vecchio/endpoint-fetcher-auth) · [NPM](https://www.npmjs.com/package/@endpoint-fetcher/auth)
+</Callout>
+
+## Installation
+
+```bash npm2yarn
+npm install @endpoint-fetcher/auth
+```
+
+> Requires `endpoint-fetcher` v3.0.0 or higher.
+
+## Quick Start
+
+Pick a strategy and pass it to `auth()`:
+
+```typescript
+import { createApiClient, get } from 'endpoint-fetcher';
+import { auth } from '@endpoint-fetcher/auth';
+
+const api = createApiClient({
+  getMe:     get<void, User>('/me'),
+  listPosts: get<void, Post[]>('/posts'),
+}, {
+  baseUrl: 'https://api.example.com',
+  plugins: [
+    auth({
+      strategy: 'jwt',
+      token: localStorage.getItem('access_token') ?? undefined,
+      refreshCallback: async (rt) => {
+        const res = await fetch('/auth/refresh', {
+          method: 'POST',
+          body: JSON.stringify({ refresh_token: rt }),
+        });
+        const data = await res.json();
+        return { token: data.access_token, refreshToken: data.refresh_token };
+      },
+    }),
+  ] as const,
+});
+
+const me = await api.getMe(); // User — type unchanged, no wrapper
+```
+
+## Strategies
+
+Select a strategy with the `strategy` field. TypeScript narrows the config type automatically.
+
+### `jwt`
+
+Attaches `Authorization: Bearer <token>`. Automatically refreshes on 401 via `refreshCallback` or `refreshEndpoint`.
+
+```typescript
+auth({
+  strategy: 'jwt',
+  token: 'initial-access-token',
+  refreshToken: 'initial-refresh-token',
+  refreshCallback: async (rt) => ({ token: await getNewToken(rt) }),
+  // or: refreshEndpoint: '/auth/refresh'  (expects { refresh_token } body → { access_token })
+  autoRefresh: true, // default
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `token` | `string` | — | Initial access token |
+| `refreshToken` | `string` | — | Initial refresh token |
+| `refreshCallback` | `(rt) => Promise<{ token, refreshToken? }>` | — | Custom refresh function |
+| `refreshEndpoint` | `string` | — | URL to POST `{ refresh_token }` to |
+| `autoRefresh` | `boolean` | `true` | Refresh token on 401 |
+| `storage` | `TokenStorage` | In-memory | Where to persist tokens |
+| `tokenStorageKey` | `string` | `'token'` | Storage key for the access token |
+| `refreshTokenStorageKey` | `string` | `'refreshToken'` | Storage key for the refresh token |
+
+### `oauth2`
+
+Three grant types — select via `grantType`.
+
+**Client Credentials** (server-to-server, fully automatic):
+
+```typescript
+auth({
+  strategy: 'oauth2',
+  grantType: 'client_credentials',
+  clientId: process.env.CLIENT_ID!,
+  clientSecret: process.env.CLIENT_SECRET!,
+  tokenEndpoint: 'https://auth.example.com/token',
+  scope: 'read write',
+})
+```
+
+**Authorization Code + PKCE** (browser SPA):
+
+```typescript
+import { generateCodeVerifier, generateCodeChallenge, buildAuthorizationUrl } from '@endpoint-fetcher/auth';
+
+// In your login handler:
+const verifier = generateCodeVerifier();
+const challenge = await generateCodeChallenge(verifier);
+sessionStorage.setItem('pkce_verifier', verifier);
+window.location.href = buildAuthorizationUrl(authEndpoint, clientId, redirectUri, challenge);
+
+// After redirect back, exchange the code:
+import { exchangeCodeForToken } from '@endpoint-fetcher/auth';
+const { accessToken, refreshToken } = await exchangeCodeForToken(
+  tokenEndpoint, clientId, code, redirectUri, verifier
+);
+api.plugins.auth.setToken(accessToken);
+if (refreshToken) api.plugins.auth.setRefreshToken(refreshToken);
+```
+
+**Device Code** (CLI / headless):
+
+```typescript
+auth({
+  strategy: 'oauth2',
+  grantType: 'device_code',
+  clientId: 'my-cli',
+  tokenEndpoint: 'https://auth.example.com/token',
+  deviceAuthorizationEndpoint: 'https://auth.example.com/device/code',
+  scope: 'read',
+  onDeviceAuthorization: ({ verificationUri, userCode }) => {
+    console.log(`Visit ${verificationUri} and enter: ${userCode}`);
+  },
+})
+```
+
+### `api-key`
+
+Attaches the key as a header (default `X-API-Key`) or a query parameter.
+
+```typescript
+auth({ strategy: 'api-key', key: 'sk-abc123' })
+
+// Custom header name
+auth({ strategy: 'api-key', key: 'sk-abc123', in: 'header', name: 'X-Token' })
+
+// Query parameter
+auth({ strategy: 'api-key', key: 'sk-abc123', in: 'query', name: 'token' })
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `key` | `string` | — | The API key value |
+| `in` | `'header' \| 'query'` | `'header'` | How to attach the key |
+| `name` | `string` | `'X-API-Key'` / `'api_key'` | Header or query-param name |
+
+### `basic`
+
+Encodes `username:password` as `Authorization: Basic <base64>` per RFC 7617.
+
+```typescript
+// Static credentials
+auth({ strategy: 'basic', username: 'alice', password: 's3cr3t' })
+
+// Dynamic credentials
+auth({
+  strategy: 'basic',
+  getCredentials: async () => ({
+    username: await vault.get('username'),
+    password: await vault.get('password'),
+  }),
+})
+```
+
+### `bearer`
+
+Generic `Authorization: Bearer <token>` without JWT-specific refresh logic.
+
+```typescript
+// Static token
+auth({ strategy: 'bearer', token: 'my-opaque-token' })
+
+// Dynamic token
+auth({ strategy: 'bearer', getToken: () => tokenService.getCurrent() })
+
+// Managed via plugin methods
+api.plugins.auth.setToken('new-token');
+```
+
+### `hmac`
+
+Signs each request with HMAC-SHA256 (configurable). The signed string is `METHOD\nPATH[\nTIMESTAMP][\nBODY_HASH]`.
+
+```typescript
+auth({
+  strategy: 'hmac',
+  secret: process.env.HMAC_SECRET!,
+  algorithm: 'SHA-256',      // 'SHA-1' | 'SHA-256' | 'SHA-512'
+  header: 'X-Signature',
+  timestampHeader: 'X-Timestamp',
+  includeBodyHash: true,
+})
+```
+
+> Requires Node.js ≥ 18 or a modern browser (uses `crypto.subtle`).
+
+### `digest`
+
+Full HTTP Digest challenge-response flow per RFC 7616. Sends an unauthenticated request, parses the `WWW-Authenticate: Digest` challenge, then retries with the computed `Authorization: Digest` header. Supports MD5, MD5-sess, SHA-256, and SHA-256-sess algorithms.
+
+```typescript
+auth({ strategy: 'digest', username: 'alice', password: 's3cr3t' })
+```
+
+### `custom`
+
+Attach any headers you return from `getHeaders`. Useful for proprietary auth schemes.
+
+```typescript
+auth({
+  strategy: 'custom',
+  getHeaders: async ({ method, path, url }) => ({
+    'X-Timestamp': Date.now().toString(),
+    'X-Service-Token': await tokenService.get(url),
+  }),
+})
+```
+
+## Token Storage
+
+All strategies that handle tokens accept an optional `storage` option. Three built-in adapters are provided:
+
+| Adapter | Description | Environment |
+|---------|-------------|-------------|
+| `MemoryTokenStorage` | Default — lost on reload | Any |
+| `LocalStorageTokenStorage` | Persists across reloads | Browser |
+| `CookieTokenStorage` | Readable server-side; accepts SSR callbacks | Browser + SSR |
+
+```typescript
+import { auth, LocalStorageTokenStorage, CookieTokenStorage } from '@endpoint-fetcher/auth';
+
+// Browser localStorage
+auth({
+  strategy: 'jwt',
+  storage: new LocalStorageTokenStorage({ prefix: 'myapp_' }),
+})
+
+// Cookies (browser)
+auth({
+  strategy: 'jwt',
+  storage: new CookieTokenStorage({
+    cookieOptions: { secure: true, sameSite: 'Strict', maxAge: 3600 },
+  }),
+})
+
+// Cookies (SSR — e.g. Next.js)
+auth({
+  strategy: 'jwt',
+  storage: new CookieTokenStorage({
+    getCookie: (name) => cookies().get(name)?.value ?? null,
+    setCookie: (name, value, opts) => cookies().set(name, value, opts),
+    deleteCookie: (name) => cookies().delete(name),
+  }),
+})
+```
+
+Implement `TokenStorage` yourself to use any backend (Redis, encrypted store, etc.):
+
+```typescript
+import type { TokenStorage } from '@endpoint-fetcher/auth';
+
+class RedisTokenStorage implements TokenStorage {
+  get(key: string)              { return redis.get(key); }
+  set(key: string, value: string) { redis.set(key, value); }
+  delete(key: string)           { redis.del(key); }
+  clear()                       { /* custom logic */ }
+}
+```
+
+## Plugin Methods
+
+All methods are accessible via `client.plugins.auth`:
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `setToken` | `(token: string) => void` | Store an access token |
+| `getToken` | `() => string \| null` | Retrieve the current access token |
+| `setRefreshToken` | `(token: string) => void` | Store a refresh token |
+| `getRefreshToken` | `() => string \| null` | Retrieve the current refresh token |
+| `logout` | `() => void` | Clear all stored tokens |
+| `isAuthenticated` | `() => boolean` | `true` if an access token is stored |
+
+```typescript
+// After a successful login
+api.plugins.auth.setToken(loginResponse.accessToken);
+api.plugins.auth.setRefreshToken(loginResponse.refreshToken);
+
+// Guard a route
+if (!api.plugins.auth.isAuthenticated()) {
+  redirect('/login');
+}
+
+// On logout
+api.plugins.auth.logout();
+```
+
+## Troubleshooting
+
+**No `Authorization` header is sent** — Make sure you're passing a token either in the config (`token: '...'`) or via `setToken()` after creation. For the `bearer` strategy, check that `getToken()` doesn't return `null`.
+
+**401 is not retried (JWT)** — `autoRefresh` defaults to `true`, but a retry only happens when a `refreshCallback` or `refreshEndpoint` is provided *and* a refresh token is in storage. Verify both are set.
+
+**HMAC strategy throws at runtime** — Requires `crypto.subtle` (Node.js ≥ 18 or a modern browser). On older Node versions, set `global.crypto = require('crypto').webcrypto` before importing.
+
+**OAuth2 client_credentials token is fetched on every request** — This happens when the token is missing or expired. If `expiresIn` is not returned by your token endpoint, the plugin cannot track expiry and re-fetches each time. Return `expires_in` from the token endpoint to enable caching.
